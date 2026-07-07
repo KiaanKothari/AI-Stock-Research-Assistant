@@ -47,22 +47,59 @@ def get_ticker_object(symbol: str) -> yf.Ticker:
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def get_company_info(symbol: str) -> dict[str, Any]:
     """
-    Fetch company profile & key statistics.
-
-    Returns an empty dict if the ticker is invalid or data is unavailable.
+    Fetch company profile & key statistics using multiple methods.
     """
+
     try:
         ticker = yf.Ticker(symbol.strip().upper())
-        info = ticker.info or {}
-        # yfinance sometimes returns a near-empty dict for invalid tickers
-        if not info or info.get("regularMarketPrice") is None and info.get(
-            "currentPrice"
-        ) is None and info.get("previousClose") is None:
-            return info if info else {}
+
+        info = {}
+
+        # Try the newer API first
+        try:
+            info = ticker.get_info()
+        except Exception:
+            pass
+
+        # Fall back to the older API if needed
+        if not info:
+            try:
+                info = ticker.info
+            except Exception:
+                info = {}
+
+        # Merge fast_info where possible
+        try:
+            fast = ticker.fast_info
+
+            if fast:
+                if "marketCap" not in info:
+                    info["marketCap"] = fast.get("market_cap")
+
+                if "currency" not in info:
+                    info["currency"] = fast.get("currency")
+
+                if "currentPrice" not in info:
+                    info["currentPrice"] = fast.get("last_price")
+
+                if "dayHigh" not in info:
+                    info["dayHigh"] = fast.get("day_high")
+
+                if "dayLow" not in info:
+                    info["dayLow"] = fast.get("day_low")
+
+                if "fiftyTwoWeekHigh" not in info:
+                    info["fiftyTwoWeekHigh"] = fast.get("year_high")
+
+                if "fiftyTwoWeekLow" not in info:
+                    info["fiftyTwoWeekLow"] = fast.get("year_low")
+        except Exception:
+            pass
+
         return info
+
     except Exception:
         return {}
-
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def get_logo_url(symbol: str, website: Optional[str] = None) -> Optional[str]:
