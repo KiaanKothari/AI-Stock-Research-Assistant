@@ -2869,6 +2869,176 @@ if education_mode:
         for _i, _question in enumerate(generate_reflection_questions(company_name, info), start=1):
             st.markdown(f"**{_i}.** {_question}")
 
+        st.divider()
+
+        # =============================================================== #
+        # NEW: CLASSROOM ACTIVITIES EXPANDER
+        # Added below the existing educational explanation content, per
+        # Education Mode enhancement request. Purely additive — does not
+        # touch any analytics, charts, or scoring logic.
+        # =============================================================== #
+        with st.expander("🏫 Classroom Activities", expanded=False):
+            st.markdown("### Think–Pair–Share")
+            st.markdown(
+                f"Based on today's data, do you think **{company_name}** is overvalued or "
+                f"undervalued? Support your answer using the P/E ratio."
+            )
+
+            st.markdown("### Small Group Activity")
+            st.markdown(
+                f"Have students compare **{company_name}** with another company of their "
+                f"choice using:"
+            )
+            st.markdown(
+                "- Market Cap\n"
+                "- Revenue Growth\n"
+                "- Profit Margin\n"
+                "- P/E Ratio"
+            )
+            st.markdown("Students should decide which company they would invest in and explain why.")
+
+            st.markdown("### Whole Class Discussion")
+            st.markdown(
+                "- Should investors rely more on financial statements or stock charts?\n"
+                "- Can a great company still be a bad investment?\n"
+                "- What financial metric surprised you the most today?"
+            )
+        # ----- END NEW: CLASSROOM ACTIVITIES EXPANDER ----- #
+
+        # =============================================================== #
+        # NEW: INVESTING VOCABULARY EXPANDER
+        # =============================================================== #
+        with st.expander("📚 Investing Vocabulary", expanded=False):
+            _quick_vocab_terms = {
+                "Market Capitalization": "The total value of a company's shares — share price multiplied by the number of shares outstanding.",
+                "Revenue": "The total amount of money a company brings in from sales, before any expenses are subtracted.",
+                "Net Income": "The company's actual profit after ALL expenses, taxes, and costs have been subtracted from revenue.",
+                "Earnings Per Share (EPS)": "A company's profit divided by its number of shares — shows how much profit is earned per share.",
+                "P/E Ratio": "A company's share price divided by its earnings per share — shows how much investors are paying for each dollar of profit.",
+                "Dividend": "A cash payment some companies make to shareholders, usually from profits.",
+                "Bull Market": "A period when stock prices are generally rising and investor confidence is high.",
+                "Bear Market": "A period when stock prices are generally falling and investor confidence is low.",
+                "Volatility": "How much and how quickly a stock's price moves up and down over time.",
+                "Risk": "The chance that an investment could lose value or not perform as expected.",
+                "Diversification": "Spreading investments across different assets to reduce overall risk.",
+                "Return on Equity (ROE)": "A measure of how efficiently a company uses shareholders' money to generate profit.",
+            }
+            for _term, _definition in _quick_vocab_terms.items():
+                st.markdown(f"**{_term}:** {_definition}")
+        # ----- END NEW: INVESTING VOCABULARY EXPANDER ----- #
+
+        # =============================================================== #
+        # NEW: QUICK QUIZ EXPANDER
+        # =============================================================== #
+        with st.expander("📝 Quick Quiz", expanded=False):
+            _quiz_questions = [
+                {
+                    "question": "If a stock has a P/E ratio of 25, what does this generally mean?",
+                    "options": [
+                        "Investors are paying $25 for every $1 of earnings",
+                        "The company lost $25 million",
+                        "The stock price will double in 25 days",
+                        "The company pays a 25% dividend",
+                    ],
+                    "correct": "Investors are paying $25 for every $1 of earnings",
+                    "explanation": "The P/E ratio shows how much investors are willing to pay for each dollar of a company's earnings.",
+                },
+                {
+                    "question": "What is 'revenue'?",
+                    "options": [
+                        "The total money a company earns from sales before expenses",
+                        "The profit left after all expenses",
+                        "The amount of debt a company owes",
+                        "The number of employees a company has",
+                    ],
+                    "correct": "The total money a company earns from sales before expenses",
+                    "explanation": "Revenue is the total sales a company brings in — it doesn't account for costs yet.",
+                },
+                {
+                    "question": "What is a dividend?",
+                    "options": [
+                        "A cash payment companies sometimes make to shareholders",
+                        "A fee investors pay to buy stock",
+                        "A type of stock market crash",
+                        "A government tax on stock profits",
+                    ],
+                    "correct": "A cash payment companies sometimes make to shareholders",
+                    "explanation": "Dividends are a way companies share profits directly with their shareholders.",
+                },
+                {
+                    "question": "Why do investors diversify their portfolio?",
+                    "options": [
+                        "To reduce risk by spreading investments across different assets",
+                        "To guarantee higher returns every year",
+                        "To avoid paying any taxes",
+                        "To make the portfolio harder to track",
+                    ],
+                    "correct": "To reduce risk by spreading investments across different assets",
+                    "explanation": "Diversification helps reduce risk — if one investment performs poorly, others may offset the loss.",
+                },
+                {
+                    "question": "How is market capitalization calculated?",
+                    "options": [
+                        "Share price multiplied by total number of shares outstanding",
+                        "Total revenue minus total expenses",
+                        "Total debt plus total equity",
+                        "Stock price divided by earnings per share",
+                    ],
+                    "correct": "Share price multiplied by total number of shares outstanding",
+                    "explanation": "Market cap = share price × total shares outstanding, representing the company's total market value.",
+                },
+            ]
+
+            _quiz_score = 0
+            for _q_idx, _quiz_item in enumerate(_quiz_questions, start=1):
+                st.markdown(f"**Question {_q_idx}:** {_quiz_item['question']}")
+                _student_answer = st.radio(
+                    f"Select an answer for question {_q_idx}",
+                    options=_quiz_item["options"],
+                    index=None,
+                    key=f"student_quiz_q{_q_idx}",
+                    label_visibility="collapsed",
+                )
+                if _student_answer is not None:
+                    if _student_answer == _quiz_item["correct"]:
+                        _quiz_score += 1
+                        st.success(f"✅ Correct! {_quiz_item['explanation']}")
+                    else:
+                        st.error(f"❌ Not quite. {_quiz_item['explanation']}")
+                st.markdown("---")
+
+            st.markdown("#### Quiz Score:")
+            st.markdown(f"### {_quiz_score} / 5")
+        # ----- END NEW: QUICK QUIZ EXPANDER ----- #
+
+        # =============================================================== #
+        # NEW: TEACHER NOTES (LESSON PLAN) EXPANDER
+        # =============================================================== #
+        with st.expander("👨‍🏫 Teacher Notes", expanded=False):
+            st.markdown("**Recommended Grade:**")
+            st.markdown("9–12")
+
+            st.markdown("**Course:**")
+            st.markdown("Emerging Financial Markets")
+
+            st.markdown("**Estimated Lesson Time:**")
+            st.markdown("25–40 minutes")
+
+            st.markdown("**Learning Objectives:**")
+            st.markdown(
+                "- Interpret stock data\n"
+                "- Understand valuation metrics\n"
+                "- Compare companies\n"
+                "- Build investment reasoning"
+            )
+
+            st.markdown("**Homework:**")
+            st.markdown(
+                "Choose another publicly traded company and write a one-page investment "
+                "recommendation using at least five metrics from the app."
+            )
+        # ----- END NEW: TEACHER NOTES (LESSON PLAN) EXPANDER ----- #
+
     # ----------------------------------------------------------------- #
     # 📝 Classroom tab (Requirements 4 and 6)
     # ----------------------------------------------------------------- #
