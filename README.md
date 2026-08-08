@@ -1,4 +1,4 @@
-# 📈 AI Stock Research Assistant
+# 📈 AI Stock Research Assistant (NEW UPDATE)
 
 An AI-powered stock research platform built with **Python**, **Streamlit**, **Yahoo Finance**, and **Plotly**. This application enables users to explore real-time stock information, visualize historical price trends, and access key company metrics through an intuitive web interface.
 
