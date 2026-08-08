@@ -1291,6 +1291,8 @@ def init_state() -> None:
         st.session_state[WATCHLIST_KEY] = []
     if PORTFOLIO_KEY not in st.session_state:
         st.session_state[PORTFOLIO_KEY] = []
+    if ALERTS_KEY not in st.session_state:  # NEW: price alerts state
+        st.session_state[ALERTS_KEY] = []
 
 
 # --------------------------------------------------------------------------- #
@@ -1890,6 +1892,369 @@ def generate_case_study(company_name: str, symbol: str, info: dict[str, Any]) ->
 
 
 # =========================================================================== #
+# SECTION 7C: NEW FEATURE MODULES  ***NEW — Aug 2026 update***
+# ---------------------------------------------------------------------
+# Price Alerts, Peer/Sector Comparison, News Sentiment Analysis, and
+# SMA-Crossover Backtesting. Purely additive — none of the existing tabs,
+# charts, or analytics are modified by this section.
+# =========================================================================== #
+
+# --------------------------------------------------------------------------- #
+# 7C.1 — Price Alerts / Watchlist Notifications
+# --------------------------------------------------------------------------- #
+
+ALERTS_KEY = "price_alerts"
+
+
+def init_alerts_state() -> None:
+    """Ensure the price-alerts session_state container exists."""
+    if ALERTS_KEY not in st.session_state:
+        st.session_state[ALERTS_KEY] = []
+
+
+def add_price_alert(symbol: str, target_price: float, direction: str, note: str = "") -> None:
+    """Add a new price alert for a ticker (direction is 'above' or 'below')."""
+    init_alerts_state()
+    symbol = symbol.strip().upper()
+    if not symbol or target_price <= 0:
+        return
+    st.session_state[ALERTS_KEY].append(
+        {
+            "symbol": symbol,
+            "target_price": float(target_price),
+            "direction": direction,
+            "note": note.strip(),
+            "created_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+    )
+
+
+def remove_price_alert(index: int) -> None:
+    """Remove a price alert by its position in the list."""
+    init_alerts_state()
+    if 0 <= index < len(st.session_state[ALERTS_KEY]):
+        st.session_state[ALERTS_KEY].pop(index)
+
+
+def evaluate_price_alerts() -> pd.DataFrame:
+    """
+    Check every saved alert against the latest live price and return a
+    DataFrame with a "Triggered" column indicating whether the alert
+    condition has been met.
+    """
+    init_alerts_state()
+    rows = []
+    for i, alert in enumerate(st.session_state[ALERTS_KEY]):
+        live = get_live_price(alert["symbol"])
+        current_price = live.get("price")
+        triggered = False
+        if current_price is not None:
+            if alert["direction"] == "above" and current_price >= alert["target_price"]:
+                triggered = True
+            elif alert["direction"] == "below" and current_price <= alert["target_price"]:
+                triggered = True
+        rows.append(
+            {
+                "Index": i,
+                "Symbol": alert["symbol"],
+                "Target": alert["target_price"],
+                "Direction": alert["direction"],
+                "Current Price": current_price,
+                "Note": alert["note"],
+                "Created": alert["created_at"],
+                "Triggered": triggered,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+# --------------------------------------------------------------------------- #
+# 7C.2 — Peer / Sector Comparison Benchmarking
+# --------------------------------------------------------------------------- #
+
+PEER_MAP: dict[str, list[str]] = {
+    "AAPL": ["MSFT", "GOOGL", "DELL", "HPQ"],
+    "MSFT": ["GOOGL", "AAPL", "ORCL", "IBM"],
+    "GOOGL": ["MSFT", "META", "AMZN"],
+    "AMZN": ["WMT", "TGT", "BABA"],
+    "TSLA": ["GM", "F", "RIVN"],
+    "META": ["GOOGL", "SNAP", "PINS"],
+    "NVDA": ["AMD", "INTC", "QCOM"],
+}
+
+
+def get_peer_symbols(symbol: str) -> list[str]:
+    """Return a curated peer group for a ticker, or an empty list if unknown."""
+    return PEER_MAP.get(symbol.strip().upper(), [])
+
+
+def build_peer_comparison_table(symbol: str, peers: list[str]) -> pd.DataFrame:
+    """Build a side-by-side benchmarking table for a symbol and its peers."""
+    rows = []
+    for sym in [symbol] + peers:
+        peer_info = get_company_info(sym)
+        rows.append(
+            {
+                "Symbol": sym,
+                "Market Cap": peer_info.get("marketCap"),
+                "Revenue Growth": peer_info.get("revenueGrowth"),
+                "Profit Margin": peer_info.get("profitMargins"),
+                "P/E Ratio": peer_info.get("trailingPE"),
+                "ROE": peer_info.get("returnOnEquity"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def peer_comparison_chart(comparison_df: pd.DataFrame, metric: str, symbol: str) -> go.Figure:
+    """Bar chart comparing a single metric across a symbol and its peers."""
+    fig = go.Figure()
+    colors = [COLOR_ACCENT if s == symbol else COLOR_SMA20 for s in comparison_df["Symbol"]]
+    fig.add_trace(
+        go.Bar(
+            x=comparison_df["Symbol"],
+            y=comparison_df[metric],
+            marker_color=colors,
+        )
+    )
+    return _base_layout(fig, title=f"{metric} — Peer Comparison", height=380)
+
+
+# --------------------------------------------------------------------------- #
+# 7C.3 — News Sentiment Analysis (lexicon-based, no external API/LLM)
+# --------------------------------------------------------------------------- #
+
+POSITIVE_SENTIMENT_WORDS = {
+    "beat", "beats", "growth", "surge", "surges", "soar", "soars", "record",
+    "profit", "profits", "gain", "gains", "rally", "rallies", "upgrade",
+    "upgraded", "strong", "outperform", "bullish", "rise", "rises", "rising",
+    "boost", "boosts", "positive", "win", "wins", "expand", "expands",
+    "expansion", "success", "successful", "breakthrough", "innovation",
+    "buy", "top", "high", "higher", "optimistic",
+}
+
+NEGATIVE_SENTIMENT_WORDS = {
+    "miss", "misses", "missed", "decline", "declines", "plunge", "plunges",
+    "fall", "falls", "falling", "drop", "drops", "loss", "losses", "downgrade",
+    "downgraded", "weak", "underperform", "bearish", "sell-off", "selloff",
+    "lawsuit", "investigation", "recall", "layoff", "layoffs", "cut", "cuts",
+    "warning", "warns", "risk", "risks", "concern", "concerns", "negative",
+    "low", "lower", "crash", "slump", "struggl", "fraud", "scandal",
+}
+
+
+def analyze_headline_sentiment(text: str) -> tuple[str, int]:
+    """
+    Score a headline using a simple positive/negative keyword lexicon.
+    Returns a (label, score) tuple where label is Positive/Negative/Neutral.
+    """
+    words = "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()
+    score = 0
+    for word in words:
+        if word in POSITIVE_SENTIMENT_WORDS:
+            score += 1
+        elif word in NEGATIVE_SENTIMENT_WORDS:
+            score -= 1
+    if score > 0:
+        label = "Positive"
+    elif score < 0:
+        label = "Negative"
+    else:
+        label = "Neutral"
+    return label, score
+
+
+def analyze_headlines_sentiment(news_items: list[dict[str, Any]]) -> pd.DataFrame:
+    """Run sentiment analysis across a normalized list of news items."""
+    rows = []
+    for item in news_items:
+        label, score = analyze_headline_sentiment(item.get("title", ""))
+        rows.append({"title": item.get("title", ""), "sentiment": label, "score": score})
+    return pd.DataFrame(rows)
+
+
+def sentiment_summary_chart(sentiment_df: pd.DataFrame) -> go.Figure:
+    """Bar chart of Positive / Neutral / Negative headline counts."""
+    counts = sentiment_df["sentiment"].value_counts()
+    order = ["Positive", "Neutral", "Negative"]
+    values = [int(counts.get(label, 0)) for label in order]
+    colors = [COLOR_UP, COLOR_ACCENT, COLOR_DOWN]
+    fig = go.Figure(
+        data=[go.Bar(x=order, y=values, marker_color=colors)]
+    )
+    return _base_layout(fig, title="News Sentiment Breakdown", height=320)
+
+
+# --------------------------------------------------------------------------- #
+# 7C.4 — Backtesting: Simple SMA Crossover Strategy
+# --------------------------------------------------------------------------- #
+
+def run_sma_crossover_backtest(
+    hist: pd.DataFrame,
+    short_window: int = 20,
+    long_window: int = 50,
+    initial_capital: float = 10_000.0,
+) -> dict[str, Any]:
+    """
+    Simulate a simple SMA-crossover strategy: go long whenever the short SMA
+    is above the long SMA, and stay in cash otherwise. Returns the resulting
+    equity curves (strategy vs. buy-and-hold), summary stats, and trade log.
+    """
+    if hist.empty or len(hist) < long_window + 2:
+        return {"equity": pd.DataFrame(), "stats": {}, "trades": []}
+
+    df = hist.copy()
+    df["SMA_Short"] = df["Close"].rolling(short_window).mean()
+    df["SMA_Long"] = df["Close"].rolling(long_window).mean()
+    df["Signal"] = 0
+    df.loc[df["SMA_Short"] > df["SMA_Long"], "Signal"] = 1
+    df["Position"] = df["Signal"].shift(1).fillna(0)
+    df["Daily_Return"] = df["Close"].pct_change().fillna(0)
+    df["Strategy_Return"] = df["Position"] * df["Daily_Return"]
+    df["Strategy_Equity"] = initial_capital * (1 + df["Strategy_Return"]).cumprod()
+    df["BuyHold_Equity"] = initial_capital * (1 + df["Daily_Return"]).cumprod()
+
+    trades: list[dict[str, Any]] = []
+    in_position = False
+    entry_price = None
+    entry_date = None
+    for idx, row in df.iterrows():
+        if row["Position"] == 1 and not in_position:
+            in_position = True
+            entry_price = row["Close"]
+            entry_date = idx
+        elif row["Position"] == 0 and in_position:
+            in_position = False
+            exit_price = row["Close"]
+            ret_pct = (exit_price / entry_price - 1) * 100 if entry_price else 0.0
+            trades.append(
+                {
+                    "entry_date": entry_date,
+                    "exit_date": idx,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "return_pct": ret_pct,
+                }
+            )
+    if in_position and entry_price:
+        exit_price = df["Close"].iloc[-1]
+        ret_pct = (exit_price / entry_price - 1) * 100
+        trades.append(
+            {
+                "entry_date": entry_date,
+                "exit_date": df.index[-1],
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "return_pct": ret_pct,
+            }
+        )
+
+    final_strategy = df["Strategy_Equity"].iloc[-1]
+    final_buyhold = df["BuyHold_Equity"].iloc[-1]
+    total_return_pct = (final_strategy / initial_capital - 1) * 100
+    buyhold_return_pct = (final_buyhold / initial_capital - 1) * 100
+
+    running_max = df["Strategy_Equity"].cummax()
+    drawdown = (df["Strategy_Equity"] - running_max) / running_max
+    max_drawdown_pct = float(drawdown.min() * 100) if not drawdown.empty else 0.0
+
+    winning_trades = [t for t in trades if t["return_pct"] > 0]
+    win_rate_pct = (len(winning_trades) / len(trades) * 100) if trades else 0.0
+
+    stats = {
+        "total_return_pct": total_return_pct,
+        "buyhold_return_pct": buyhold_return_pct,
+        "num_trades": len(trades),
+        "win_rate_pct": win_rate_pct,
+        "max_drawdown_pct": max_drawdown_pct,
+    }
+    return {"equity": df[["Strategy_Equity", "BuyHold_Equity"]], "stats": stats, "trades": trades}
+
+
+def backtest_equity_chart(equity_df: pd.DataFrame, symbol: str) -> go.Figure:
+    """Line chart comparing strategy equity vs. buy-and-hold equity."""
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=equity_df.index,
+            y=equity_df["Strategy_Equity"],
+            name="SMA Crossover Strategy",
+            line=dict(color=COLOR_ACCENT, width=2),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=equity_df.index,
+            y=equity_df["BuyHold_Equity"],
+            name="Buy & Hold",
+            line=dict(color=COLOR_SMA20, width=2, dash="dash"),
+        )
+    )
+    return _base_layout(fig, title=f"{symbol} — Strategy vs. Buy & Hold", height=420)
+
+
+# --------------------------------------------------------------------------- #
+# 7C.5 — Dark / Light Theme Toggle
+# --------------------------------------------------------------------------- #
+
+def build_custom_css(theme_mode: str) -> str:
+    """Return the app's custom CSS, adapted for the selected theme mode."""
+    if theme_mode == "Light":
+        bg_color = "#FFFFFF"
+        text_color = "#1A1A1A"
+        metric_bg = "rgba(0, 0, 0, 0.03)"
+        metric_border = "rgba(0, 0, 0, 0.12)"
+    else:
+        bg_color = "#0E1117"
+        text_color = "#D1D5DB"
+        metric_bg = "rgba(127, 127, 127, 0.08)"
+        metric_border = "rgba(127, 127, 127, 0.18)"
+
+    return f"""
+<style>
+    .stApp {{ background-color: {bg_color}; color: {text_color}; }}
+
+    /* Metric cards */
+    div[data-testid="stMetric"] {{
+        background-color: {metric_bg};
+        border: 1px solid {metric_border};
+        border-radius: 10px;
+        padding: 14px 16px 10px 16px;
+    }}
+    div[data-testid="stMetricLabel"] {{ font-size: 0.78rem; opacity: 0.8; }}
+
+    /* Section headers */
+    h1, h2, h3 {{ letter-spacing: -0.3px; color: {text_color}; }}
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {{ gap: 4px; }}
+    .stTabs [data-baseweb="tab"] {{
+        border-radius: 8px 8px 0 0;
+        padding: 8px 16px;
+        font-weight: 600;
+    }}
+
+    /* Ticker badge */
+    .ticker-badge {{
+        display: inline-block;
+        background: linear-gradient(135deg, #F5A623, #F76B1C);
+        color: #111;
+        font-weight: 700;
+        padding: 4px 12px;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        letter-spacing: 0.5px;
+    }}
+
+    .price-up {{ color: #00C805; font-weight: 700; }}
+    .price-down {{ color: #FF3B30; font-weight: 700; }}
+
+    footer {{ visibility: hidden; }}
+</style>
+"""
+
+
+# =========================================================================== #
 # SECTION 8: STREAMLIT APPLICATION (originally app.py)
 # =========================================================================== #
 # --------------------------------------------------------------------------- #
@@ -1909,48 +2274,13 @@ init_state()
 # Global styling — Bloomberg-inspired dark dashboard, dark-mode compatible
 # --------------------------------------------------------------------------- #
 
-CUSTOM_CSS = """
-<style>
-    .stApp { background-color: var(--background-color); }
-
-    /* Metric cards */
-    div[data-testid="stMetric"] {
-        background-color: rgba(127, 127, 127, 0.08);
-        border: 1px solid rgba(127, 127, 127, 0.18);
-        border-radius: 10px;
-        padding: 14px 16px 10px 16px;
-    }
-    div[data-testid="stMetricLabel"] { font-size: 0.78rem; opacity: 0.8; }
-
-    /* Section headers */
-    h1, h2, h3 { letter-spacing: -0.3px; }
-
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px 8px 0 0;
-        padding: 8px 16px;
-        font-weight: 600;
-    }
-
-    /* Ticker badge */
-    .ticker-badge {
-        display: inline-block;
-        background: linear-gradient(135deg, #F5A623, #F76B1C);
-        color: #111;
-        font-weight: 700;
-        padding: 4px 12px;
-        border-radius: 999px;
-        font-size: 0.85rem;
-        letter-spacing: 0.5px;
-    }
-
-    .price-up { color: #00C805; font-weight: 700; }
-    .price-down { color: #FF3B30; font-weight: 700; }
-
-    footer { visibility: hidden; }
-</style>
-"""
+# ----- NEW: DARK/LIGHT THEME TOGGLE -----
+# Reads the persisted theme choice (set by the sidebar widget below) before
+# the widget itself is re-instantiated later in this run, so the CSS for
+# the correct theme is applied immediately.
+_theme_mode = st.session_state.get("theme_mode_toggle", "Dark")
+CUSTOM_CSS = build_custom_css(_theme_mode)
+# ----- END NEW: DARK/LIGHT THEME TOGGLE -----
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
@@ -2055,6 +2385,19 @@ def build_pdf_report(symbol: str, info: dict, scores: dict) -> bytes:
 with st.sidebar:
     st.markdown("## 📈 AI Stock Research")
     st.caption("Bloomberg-inspired equity research dashboard")
+
+    # ----- NEW: DARK/LIGHT THEME TOGGLE ----- #
+    _theme_index = 0 if _theme_mode == "Dark" else 1
+    st.radio(
+        "🌓 Theme",
+        options=["Dark", "Light"],
+        index=_theme_index,
+        key="theme_mode_toggle",
+        horizontal=True,
+        help="Switch between the dashboard's dark and light color schemes.",
+    )
+    # ----- END NEW: DARK/LIGHT THEME TOGGLE ----- #
+
     st.divider()
 
     symbol_input = st.text_input("Ticker Symbol", value="AAPL", placeholder="e.g. AAPL, MSFT, TSLA").strip().upper()
@@ -2194,6 +2537,7 @@ st.divider()
 # ----- NEW: EDUCATION MODE — conditionally add "Learn" and "Classroom" -----
 # tabs only when Education Mode is on, so tab layout is identical to the
 # original app when Education Mode is off (Requirement 1).
+# ----- NEW: Aug 2026 update — Alerts / Peers / Backtest are always visible. -----
 _tab_labels = [
     "Overview",
     "Technical",
@@ -2205,6 +2549,9 @@ _tab_labels = [
     "AI Scores",
     "Portfolio",
     "Compare",
+    "🔔 Alerts",
+    "🏆 Peers",
+    "🔁 Backtest",
 ]
 if education_mode:
     _tab_labels += ["🎓 Learn", "📝 Classroom"]
@@ -2223,15 +2570,18 @@ _tabs = st.tabs(_tab_labels)
     tab_scores,
     tab_portfolio,
     tab_compare,
-) = _tabs[:10]
+    tab_alerts,
+    tab_peers,
+    tab_backtest,
+) = _tabs[:13]
 
 if education_mode:
-    tab_learn, tab_classroom = _tabs[10:12]
-    tab_export = _tabs[12]
+    tab_learn, tab_classroom = _tabs[13:15]
+    tab_export = _tabs[15]
 else:
     tab_learn, tab_classroom = None, None
-    tab_export = _tabs[10]
-# ----- END NEW: EDUCATION MODE -----
+    tab_export = _tabs[13]
+# ----- END NEW: EDUCATION MODE / ALERTS / PEERS / BACKTEST -----
 
 # --------------------------------------------------------------------------- #
 # Overview tab
@@ -2497,6 +2847,33 @@ with tab_news:
     if not normalized:
         st.info("No recent news found for this ticker.")
     else:
+        # ----- NEW: NEWS SENTIMENT ANALYSIS (Aug 2026 update) ----- #
+        sentiment_df = analyze_headlines_sentiment(normalized)
+        sentiment_lookup = dict(zip(sentiment_df["title"], sentiment_df["sentiment"]))
+
+        with st.expander("🧭 News Sentiment Overview", expanded=True):
+            pos_count = int((sentiment_df["sentiment"] == "Positive").sum())
+            neu_count = int((sentiment_df["sentiment"] == "Neutral").sum())
+            neg_count = int((sentiment_df["sentiment"] == "Negative").sum())
+
+            sent_col1, sent_col2, sent_col3 = st.columns(3)
+            sent_col1.metric("🟢 Positive Headlines", pos_count)
+            sent_col2.metric("⚪ Neutral Headlines", neu_count)
+            sent_col3.metric("🔴 Negative Headlines", neg_count)
+
+            st.plotly_chart(
+                sentiment_summary_chart(sentiment_df),
+                use_container_width=True,
+                key="news_sentiment_chart",
+            )
+            st.caption(
+                "Sentiment is estimated with a simple keyword-based scan of each "
+                "headline and is meant as a quick directional signal, not "
+                "investment advice."
+            )
+        # ----- END NEW: NEWS SENTIMENT ANALYSIS ----- #
+
+        _sentiment_badges = {"Positive": "🟢", "Neutral": "⚪", "Negative": "🔴"}
         for item in normalized:
             col_img, col_text = st.columns([1, 5])
             with col_img:
@@ -2508,7 +2885,9 @@ with tab_news:
                 else:
                     st.write("📰")
             with col_text:
-                st.markdown(f"**[{item['title']}]({item['link']})**")
+                # ----- NEW: sentiment badge next to each headline ----- #
+                _badge = _sentiment_badges.get(sentiment_lookup.get(item["title"], "Neutral"), "⚪")
+                st.markdown(f"{_badge} **[{item['title']}]({item['link']})**")
                 st.caption(f"{item['publisher']} • {item['published']}")
             st.divider()
 
@@ -2795,6 +3174,213 @@ with tab_compare:
             ),
             use_container_width=True,
         )
+
+
+# =========================================================================== #
+# NEW: PRICE ALERTS / PEER COMPARISON / BACKTEST tabs  ***Aug 2026 update***
+# Always visible (not gated by Education Mode). Purely additive — none of
+# the existing tabs, charts, or analytics above are modified.
+# =========================================================================== #
+
+# --------------------------------------------------------------------------- #
+# 🔔 Alerts tab
+# --------------------------------------------------------------------------- #
+
+with tab_alerts:
+    st.markdown("#### 🔔 Price Alerts")
+    st.caption("Set a target price for any ticker and see whether it's been triggered.")
+
+    with st.form("add_alert_form", clear_on_submit=True):
+        alert_col1, alert_col2, alert_col3 = st.columns([2, 1, 1])
+        with alert_col1:
+            alert_symbol = st.text_input("Ticker", value=symbol_input, key="alert_symbol_input")
+        with alert_col2:
+            alert_direction = st.selectbox("Direction", options=["above", "below"], key="alert_direction_input")
+        with alert_col3:
+            alert_target = st.number_input("Target Price ($)", min_value=0.0, step=1.0, key="alert_target_input")
+        alert_note = st.text_input("Note (optional)", key="alert_note_input")
+        submitted_alert = st.form_submit_button("➕ Add Alert")
+        if submitted_alert:
+            if alert_target <= 0:
+                st.warning("Please enter a target price greater than 0.")
+            else:
+                add_price_alert(alert_symbol, alert_target, alert_direction, alert_note)
+                st.toast(f"Alert added for {alert_symbol.strip().upper()}")
+
+    st.divider()
+
+    alerts_df = evaluate_price_alerts()
+    if alerts_df.empty:
+        st.info("No price alerts set yet. Add one above to get started.")
+    else:
+        triggered_count = int(alerts_df["Triggered"].sum())
+        if triggered_count > 0:
+            st.success(f"🔔 {triggered_count} alert(s) triggered!")
+
+        for _, alert_row in alerts_df.iterrows():
+            status_icon = "🔔 Triggered" if alert_row["Triggered"] else "⏳ Watching"
+            current_price_display = (
+                f"${alert_row['Current Price']:.2f}" if alert_row["Current Price"] is not None else "N/A"
+            )
+            with st.container(border=True):
+                a_col1, a_col2, a_col3, a_col4 = st.columns([2, 2, 2, 1])
+                a_col1.markdown(f"**{alert_row['Symbol']}** — {alert_row['Direction']} ${alert_row['Target']:.2f}")
+                a_col2.markdown(f"Current: {current_price_display}")
+                a_col3.markdown(status_icon)
+                if a_col4.button("🗑️", key=f"remove_alert_{int(alert_row['Index'])}"):
+                    remove_price_alert(int(alert_row["Index"]))
+                    st.rerun()
+                if alert_row["Note"]:
+                    st.caption(f"Note: {alert_row['Note']}")
+
+
+# --------------------------------------------------------------------------- #
+# 🏆 Peers tab
+# --------------------------------------------------------------------------- #
+
+with tab_peers:
+    st.markdown(f"#### 🏆 Peer & Sector Comparison — {symbol_input}")
+
+    curated_peers = get_peer_symbols(symbol_input)
+    default_peer_text = ", ".join(curated_peers)
+    if not curated_peers:
+        st.info(
+            f"No curated peer list is available for {symbol_input} yet. "
+            f"Enter peer tickers manually below (sector: {info.get('sector', 'N/A')})."
+        )
+
+    peer_text = st.text_input(
+        "Peer tickers (comma-separated)",
+        value=default_peer_text,
+        key="peer_symbols_input",
+    )
+    peer_symbols = [p.strip().upper() for p in peer_text.split(",") if p.strip()][:6]
+
+    if not peer_symbols:
+        st.warning("Add at least one peer ticker to run a comparison.")
+    else:
+        peer_df = build_peer_comparison_table(symbol_input, peer_symbols)
+
+        st.markdown("##### Benchmarking Table")
+        st.dataframe(
+            peer_df.style.format(
+                {
+                    "Market Cap": lambda x: fmt_large_number(x),
+                    "Revenue Growth": lambda x: fmt_pct(x),
+                    "Profit Margin": lambda x: fmt_pct(x),
+                    "P/E Ratio": lambda x: fmt_ratio(x),
+                    "ROE": lambda x: fmt_pct(x),
+                },
+                na_rep="N/A",
+            ),
+            use_container_width=True,
+        )
+
+        st.markdown("##### Compare a Metric")
+        peer_metric = st.selectbox(
+            "Metric",
+            options=["Market Cap", "Revenue Growth", "Profit Margin", "P/E Ratio", "ROE"],
+            key="peer_metric_select",
+        )
+        st.plotly_chart(
+            peer_comparison_chart(peer_df, peer_metric, symbol_input),
+            use_container_width=True,
+            key="peer_chart",
+        )
+
+        main_row = peer_df[peer_df["Symbol"] == symbol_input].iloc[0]
+        peer_rows = peer_df[peer_df["Symbol"] != symbol_input]
+
+        st.markdown(f"##### {symbol_input} vs. Peer Average")
+        bench_col1, bench_col2, bench_col3, bench_col4 = st.columns(4)
+        for _bench_col, _bench_metric, _bench_fmt in zip(
+            [bench_col1, bench_col2, bench_col3, bench_col4],
+            ["Profit Margin", "P/E Ratio", "ROE", "Revenue Growth"],
+            [fmt_pct, fmt_ratio, fmt_pct, fmt_pct],
+        ):
+            peer_avg = peer_rows[_bench_metric].mean() if not peer_rows.empty else None
+            main_value = main_row[_bench_metric]
+            delta = None
+            if peer_avg is not None and main_value is not None and not pd.isna(peer_avg) and not pd.isna(main_value):
+                delta = f"{main_value - peer_avg:+.4f} vs. peers"
+            _bench_col.metric(
+                _bench_metric,
+                _bench_fmt(main_value) if main_value is not None else "N/A",
+                delta=delta,
+            )
+
+
+# --------------------------------------------------------------------------- #
+# 🔁 Backtest tab
+# --------------------------------------------------------------------------- #
+
+with tab_backtest:
+    st.markdown(f"#### 🔁 Backtest: SMA Crossover Strategy — {symbol_input}")
+    st.caption(
+        "Simulates going long whenever the short-term SMA crosses above the "
+        "long-term SMA, and staying in cash otherwise, compared to simply "
+        "buying and holding."
+    )
+
+    bt_col1, bt_col2, bt_col3 = st.columns(3)
+    with bt_col1:
+        bt_short_window = st.number_input(
+            "Short SMA Window", min_value=2, max_value=100, value=20, step=1, key="bt_short_window"
+        )
+    with bt_col2:
+        bt_long_window = st.number_input(
+            "Long SMA Window", min_value=5, max_value=300, value=50, step=1, key="bt_long_window"
+        )
+    with bt_col3:
+        bt_capital = st.number_input(
+            "Starting Capital ($)", min_value=100.0, value=10_000.0, step=500.0, key="bt_capital"
+        )
+
+    if bt_short_window >= bt_long_window:
+        st.warning("The short SMA window should be smaller than the long SMA window.")
+    else:
+        backtest_result = run_sma_crossover_backtest(
+            hist, short_window=int(bt_short_window), long_window=int(bt_long_window), initial_capital=bt_capital
+        )
+        equity_df = backtest_result["equity"]
+        bt_stats = backtest_result["stats"]
+        bt_trades = backtest_result["trades"]
+
+        if equity_df.empty:
+            st.info(
+                "Not enough price history for this period to run the backtest. "
+                "Try a longer chart period in the sidebar."
+            )
+        else:
+            st.plotly_chart(
+                backtest_equity_chart(equity_df, symbol_input),
+                use_container_width=True,
+                key="backtest_chart",
+            )
+
+            stat_col1, stat_col2, stat_col3, stat_col4, stat_col5 = st.columns(5)
+            stat_col1.metric("Strategy Return", f"{bt_stats['total_return_pct']:+.2f}%")
+            stat_col2.metric("Buy & Hold Return", f"{bt_stats['buyhold_return_pct']:+.2f}%")
+            stat_col3.metric("Number of Trades", f"{bt_stats['num_trades']}")
+            stat_col4.metric("Win Rate", f"{bt_stats['win_rate_pct']:.1f}%")
+            stat_col5.metric("Max Drawdown", f"{bt_stats['max_drawdown_pct']:.2f}%")
+
+            with st.expander(f"📋 Trade Log ({len(bt_trades)} trades)"):
+                if not bt_trades:
+                    st.info("No completed trades for this window combination.")
+                else:
+                    trades_df = pd.DataFrame(bt_trades)
+                    st.dataframe(
+                        trades_df.style.format(
+                            {
+                                "entry_price": "${:.2f}",
+                                "exit_price": "${:.2f}",
+                                "return_pct": "{:+.2f}%",
+                            },
+                            na_rep="N/A",
+                        ),
+                        use_container_width=True,
+                    )
 
 
 # =========================================================================== #
