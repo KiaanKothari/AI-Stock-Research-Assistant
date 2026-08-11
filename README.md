@@ -178,23 +178,6 @@ Research Dashboard  +  Education Mode Interface
 
 ---
 
-## Screenshots
-
-> 🖼️ **Placeholder — add screenshots here.** None currently exist in the repository; the images below are not yet included. Suggested shots, in priority order:
->
-> 1. **Overview tab** — header (ticker, live price, logo) + candlestick chart + key metrics
-> 2. **AI Scores tab** — the four gauges (AI, Buffett, Graham, Risk) with their breakdowns
-> 3. **Technical tab** — candlestick with SMA/Bollinger overlays plus RSI/MACD
-> 4. **Education Mode — Learn tab** — company profile + metric explanation expanders
-> 5. **Backtest tab** — the strategy vs. buy-and-hold equity curve with stats
-
-```markdown
-![Overview Dashboard](docs/screenshots/overview.png)
-![AI Scores](docs/screenshots/ai-scores.png)
-![Technical Analysis](docs/screenshots/technical.png)
-![Education Mode - Learn Tab](docs/screenshots/learn-tab.png)
-![Backtest Results](docs/screenshots/backtest.png)
-```
 
 ---
 
