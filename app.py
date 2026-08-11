@@ -2255,6 +2255,103 @@ def build_custom_css(theme_mode: str) -> str:
 
 
 # =========================================================================== #
+# SECTION 7D: DIVIDEND HISTORY TRACKER & MULTI-CURRENCY SUPPORT  ***v1.3***
+# ---------------------------------------------------------------------
+# Purely additive — none of the existing tabs, charts, or analytics above
+# are modified, aside from the small currency-awareness change to
+# fmt_large_number() noted in Section 8's Helpers block.
+# =========================================================================== #
+
+# --------------------------------------------------------------------------- #
+# 7D.1 — Dividend History Tracker
+# --------------------------------------------------------------------------- #
+
+@st.cache_data(ttl=60 * 30, show_spinner=False)
+def get_dividend_history(symbol: str) -> pd.Series:
+    """Fetch the full historical dividend-payment series for a ticker."""
+    try:
+        ticker = yf.Ticker(symbol.strip().upper())
+        dividends = ticker.dividends
+        return dividends if dividends is not None else pd.Series(dtype=float)
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def compute_dividend_growth_rate(dividends: pd.Series) -> Optional[float]:
+    """
+    Compute the annualized dividend growth rate (CAGR) between the first
+    and most recent full year of dividend payments. Returns None if there
+    isn't enough history to compute a meaningful rate.
+    """
+    if dividends.empty:
+        return None
+    annual = dividends.groupby(dividends.index.year).sum()
+    if len(annual) < 2:
+        return None
+    years = annual.index.tolist()
+    n_years = years[-1] - years[0]
+    first_value, last_value = annual.iloc[0], annual.iloc[-1]
+    if n_years <= 0 or first_value <= 0:
+        return None
+    return (last_value / first_value) ** (1 / n_years) - 1
+
+
+def dividend_history_chart(dividends: pd.Series, symbol: str) -> go.Figure:
+    """Bar chart of a company's historical dividend payments."""
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(x=dividends.index, y=dividends.values, marker_color=COLOR_UP)
+    )
+    return _base_layout(fig, title=f"{symbol} — Dividend Payment History", height=380)
+
+
+# --------------------------------------------------------------------------- #
+# 7D.2 — Multi-Currency Display Support
+# --------------------------------------------------------------------------- #
+
+SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "JPY", "INR", "CAD", "AUD"]
+
+CURRENCY_SYMBOLS: dict[str, str] = {
+    "USD": "$",
+    "EUR": "€",
+    "GBP": "£",
+    "JPY": "¥",
+    "INR": "₹",
+    "CAD": "C$",
+    "AUD": "A$",
+}
+
+
+@st.cache_data(ttl=60 * 15, show_spinner=False)
+def get_fx_rate(target_currency: str) -> float:
+    """
+    Fetch the current USD -> target_currency exchange rate via Yahoo
+    Finance's FX tickers. Returns 1.0 (no conversion) for USD, or if the
+    live rate can't be fetched, so the app never breaks on an FX outage.
+    """
+    target_currency = target_currency.strip().upper()
+    if target_currency == "USD":
+        return 1.0
+    try:
+        pair = yf.Ticker(f"USD{target_currency}=X")
+        rate_hist = pair.history(period="5d")
+        if not rate_hist.empty:
+            return float(rate_hist["Close"].iloc[-1])
+    except Exception:
+        pass
+    return 1.0
+
+
+def fmt_currency_price(value: Any, fx_rate: float = 1.0, symbol: str = "$") -> str:
+    """Format a per-share (non-abbreviated) price value in the display currency."""
+    try:
+        value = float(value) * fx_rate
+    except (TypeError, ValueError):
+        return "N/A"
+    return f"{symbol}{value:,.2f}"
+
+
+# =========================================================================== #
 # SECTION 8: STREAMLIT APPLICATION (originally app.py)
 # =========================================================================== #
 # --------------------------------------------------------------------------- #
@@ -2288,23 +2385,36 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # Helpers
 # --------------------------------------------------------------------------- #
 
+# ----- NEW: MULTI-CURRENCY DISPLAY SUPPORT (v1.3) -----
+# Module-level display-currency state, set by the sidebar currency selector
+# further down in the script. Defaults preserve the original USD behavior
+# exactly (symbol "$", rate 1.0) until the user picks a different currency.
+_DISPLAY_CURRENCY_SYMBOL = "$"
+_DISPLAY_FX_RATE = 1.0
+# ----- END NEW -----
+
 
 def fmt_large_number(value: Any) -> str:
-    """Format large financial numbers with B/M/K suffixes."""
+    """
+    Format large financial numbers with B/M/K suffixes, converted into the
+    user's selected display currency (defaults to USD, unchanged from the
+    original behavior, when Display Currency is left at USD).
+    """
     try:
-        value = float(value)
+        value = float(value) * _DISPLAY_FX_RATE
     except (TypeError, ValueError):
         return "N/A"
+    symbol = _DISPLAY_CURRENCY_SYMBOL
     abs_v = abs(value)
     if abs_v >= 1e12:
-        return f"${value/1e12:.2f}T"
+        return f"{symbol}{value/1e12:.2f}T"
     if abs_v >= 1e9:
-        return f"${value/1e9:.2f}B"
+        return f"{symbol}{value/1e9:.2f}B"
     if abs_v >= 1e6:
-        return f"${value/1e6:.2f}M"
+        return f"{symbol}{value/1e6:.2f}M"
     if abs_v >= 1e3:
-        return f"${value/1e3:.2f}K"
-    return f"${value:.2f}"
+        return f"{symbol}{value/1e3:.2f}K"
+    return f"{symbol}{value:.2f}"
 
 
 def fmt_pct(value: Any) -> str:
@@ -2397,6 +2507,22 @@ with st.sidebar:
         help="Switch between the dashboard's dark and light color schemes.",
     )
     # ----- END NEW: DARK/LIGHT THEME TOGGLE ----- #
+
+    # ----- NEW: MULTI-CURRENCY DISPLAY SUPPORT (v1.3) ----- #
+    display_currency = st.selectbox(
+        "💱 Display Currency",
+        options=SUPPORTED_CURRENCIES,
+        index=0,
+        key="display_currency_select",
+        help="Converts market cap, revenue, and other dollar figures into "
+        "the selected currency using a live FX rate. Underlying data is "
+        "still sourced in the security's native currency.",
+    )
+    _DISPLAY_FX_RATE = get_fx_rate(display_currency)
+    _DISPLAY_CURRENCY_SYMBOL = CURRENCY_SYMBOLS.get(display_currency, "$")
+    if display_currency != "USD":
+        st.caption(f"1 USD ≈ {_DISPLAY_FX_RATE:.4f} {display_currency}")
+    # ----- END NEW: MULTI-CURRENCY DISPLAY SUPPORT ----- #
 
     st.divider()
 
@@ -2525,6 +2651,13 @@ with header_col3:
                 f"<span class='{direction_class}'>{arrow} {change:+.2f} ({pct_change:+.2f}%)</span>",
                 unsafe_allow_html=True,
             )
+        # ----- NEW: MULTI-CURRENCY DISPLAY SUPPORT (v1.3) ----- #
+        if display_currency != currency:
+            st.caption(
+                f"≈ {fmt_currency_price(price, _DISPLAY_FX_RATE, _DISPLAY_CURRENCY_SYMBOL)} "
+                f"{display_currency}"
+            )
+        # ----- END NEW ----- #
     else:
         st.markdown("### Price unavailable")
 
@@ -2538,6 +2671,7 @@ st.divider()
 # tabs only when Education Mode is on, so tab layout is identical to the
 # original app when Education Mode is off (Requirement 1).
 # ----- NEW: Aug 2026 update — Alerts / Peers / Backtest are always visible. -----
+# ----- NEW: v1.3 — Dividends tab is always visible. -----
 _tab_labels = [
     "Overview",
     "Technical",
@@ -2552,6 +2686,7 @@ _tab_labels = [
     "🔔 Alerts",
     "🏆 Peers",
     "🔁 Backtest",
+    "💵 Dividends",
 ]
 if education_mode:
     _tab_labels += ["🎓 Learn", "📝 Classroom"]
@@ -2573,15 +2708,16 @@ _tabs = st.tabs(_tab_labels)
     tab_alerts,
     tab_peers,
     tab_backtest,
-) = _tabs[:13]
+    tab_dividends,
+) = _tabs[:14]
 
 if education_mode:
-    tab_learn, tab_classroom = _tabs[13:15]
-    tab_export = _tabs[15]
+    tab_learn, tab_classroom = _tabs[14:16]
+    tab_export = _tabs[16]
 else:
     tab_learn, tab_classroom = None, None
-    tab_export = _tabs[13]
-# ----- END NEW: EDUCATION MODE / ALERTS / PEERS / BACKTEST -----
+    tab_export = _tabs[14]
+# ----- END NEW: EDUCATION MODE / ALERTS / PEERS / BACKTEST / DIVIDENDS -----
 
 # --------------------------------------------------------------------------- #
 # Overview tab
@@ -3381,6 +3517,59 @@ with tab_backtest:
                         ),
                         use_container_width=True,
                     )
+
+
+# =========================================================================== #
+# NEW: DIVIDEND HISTORY TRACKER tab  ***v1.3***
+# Always visible (not gated by Education Mode). Purely additive.
+# =========================================================================== #
+
+with tab_dividends:
+    st.markdown(f"#### 💵 Dividend History — {symbol_input}")
+
+    dividend_series = get_dividend_history(symbol_input)
+
+    if dividend_series.empty:
+        st.info(f"{symbol_input} has no recorded dividend payment history.")
+    else:
+        annual_dividend = info.get("dividendRate")
+        dividend_yield = info.get("dividendYield")
+        payout_ratio = info.get("payoutRatio")
+        growth_rate = compute_dividend_growth_rate(dividend_series)
+
+        div_col1, div_col2, div_col3, div_col4 = st.columns(4)
+        div_col1.metric(
+            "Annual Dividend",
+            fmt_currency_price(annual_dividend, _DISPLAY_FX_RATE, _DISPLAY_CURRENCY_SYMBOL)
+            if annual_dividend
+            else "N/A",
+        )
+        div_col2.metric("Dividend Yield", fmt_pct(dividend_yield))
+        div_col3.metric("Payout Ratio", fmt_pct(payout_ratio))
+        div_col4.metric(
+            "Dividend Growth (CAGR)",
+            f"{growth_rate * 100:+.2f}%" if growth_rate is not None else "N/A",
+        )
+
+        st.plotly_chart(
+            dividend_history_chart(dividend_series, symbol_input),
+            use_container_width=True,
+            key="dividend_history_chart",
+        )
+
+        with st.expander(f"📋 Full Dividend Payment History ({len(dividend_series)} payments)"):
+            dividend_table = dividend_series.sort_index(ascending=False).reset_index()
+            dividend_table.columns = ["Ex-Dividend Date", "Amount ($ / share)"]
+            st.dataframe(
+                dividend_table.style.format({"Amount ($ / share)": "${:.4f}"}),
+                use_container_width=True,
+            )
+
+        st.caption(
+            "Dividend amounts are shown in the security's native currency "
+            "per share, except for the Annual Dividend metric above, which "
+            "reflects your selected Display Currency."
+        )
 
 
 # =========================================================================== #
