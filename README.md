@@ -1,4 +1,4 @@
-# 📈 AI Stock Research Assistant
+# [RELEASE V 1.3] 📈 AI Stock Research Assistant 
 
 A single-file Streamlit application for researching stocks: technical and fundamental analysis, rule-based AI scoring, portfolio and watchlist tracking, backtesting, and a built-in Education Mode for teaching financial literacy — all in one interactive dashboard.
 
