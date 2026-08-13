@@ -1064,16 +1064,11 @@ def risk_score(info: dict[str, Any], hist: pd.DataFrame) -> ScoreResult:
 # =========================================================================== #
 # SECTION 5: VALUATION MODELS (originally valuation.py)
 # =========================================================================== #
-@dataclass
-class DCFResult:
-    """Structured output of a DCF run."""
-    projected_fcfs: list[float]
-    discounted_fcfs: list[float]
-    terminal_value: float
-    discounted_terminal_value: float
-    enterprise_value: float
-    equity_value: float
-    intrinsic_value_per_share: Optional[float]
+# NOTE: the original simple single-line "grow last year's FCF by X%" DCF
+# (DCFResult / run_dcf) that used to live here has been REPLACED by the
+# forecast-driven DCF engine in SECTION 5B below, which builds a proper
+# Revenue -> EBIT -> NOPAT -> FCFF forecast instead of growing a single
+# number. Graham Number / margin_of_safety below are unchanged.
 
 
 def graham_number(eps: Optional[float], book_value_per_share: Optional[float]) -> Optional[float]:
@@ -1114,80 +1109,6 @@ def graham_growth_formula(
     return round(value, 2) if value > 0 else None
 
 
-def run_dcf(
-    base_fcf: float,
-    growth_rate: float,
-    discount_rate: float,
-    terminal_growth_rate: float,
-    projection_years: int,
-    net_debt: float = 0.0,
-    shares_outstanding: Optional[float] = None,
-) -> DCFResult:
-    """
-    Run a straightforward two-stage Discounted Cash Flow model.
-
-    Parameters
-    ----------
-    base_fcf : float
-        Most recent trailing free cash flow (in the same currency units
-        as the rest of the model, e.g. USD).
-    growth_rate : float
-        Annual FCF growth rate applied during the explicit projection
-        window, expressed as a decimal (e.g. 0.08 for 8%).
-    discount_rate : float
-        Discount rate / WACC, expressed as a decimal (e.g. 0.09 for 9%).
-    terminal_growth_rate : float
-        Perpetual growth rate applied to the terminal value, as a decimal.
-    projection_years : int
-        Number of explicit forecast years (typically 5-10).
-    net_debt : float
-        Total debt minus cash & equivalents, used to bridge from
-        enterprise value to equity value.
-    shares_outstanding : float, optional
-        Diluted shares outstanding, used to compute per-share value.
-
-    Returns
-    -------
-    DCFResult
-    """
-    if discount_rate <= terminal_growth_rate:
-        # Guard against a mathematically invalid (negative/infinite) terminal value
-        terminal_growth_rate = max(0.0, discount_rate - 0.01)
-
-    projected_fcfs = []
-    discounted_fcfs = []
-    fcf = base_fcf
-
-    for year in range(1, projection_years + 1):
-        fcf = fcf * (1 + growth_rate)
-        projected_fcfs.append(fcf)
-        discount_factor = (1 + discount_rate) ** year
-        discounted_fcfs.append(fcf / discount_factor)
-
-    terminal_value = (
-        projected_fcfs[-1] * (1 + terminal_growth_rate)
-        / (discount_rate - terminal_growth_rate)
-    )
-    discounted_terminal_value = terminal_value / (1 + discount_rate) ** projection_years
-
-    enterprise_value = sum(discounted_fcfs) + discounted_terminal_value
-    equity_value = enterprise_value - net_debt
-
-    intrinsic_value_per_share = None
-    if shares_outstanding and shares_outstanding > 0:
-        intrinsic_value_per_share = round(equity_value / shares_outstanding, 2)
-
-    return DCFResult(
-        projected_fcfs=[round(v, 2) for v in projected_fcfs],
-        discounted_fcfs=[round(v, 2) for v in discounted_fcfs],
-        terminal_value=round(terminal_value, 2),
-        discounted_terminal_value=round(discounted_terminal_value, 2),
-        enterprise_value=round(enterprise_value, 2),
-        equity_value=round(equity_value, 2),
-        intrinsic_value_per_share=intrinsic_value_per_share,
-    )
-
-
 def margin_of_safety(intrinsic_value: Optional[float], current_price: Optional[float]) -> Optional[float]:
     """
     Percentage margin of safety between an estimated intrinsic value and
@@ -1199,8 +1120,648 @@ def margin_of_safety(intrinsic_value: Optional[float], current_price: Optional[f
 
 
 # =========================================================================== #
+# SECTION 5B: FORECAST-DRIVEN DCF ENGINE
+# ---------------------------------------------------------------------
+# Everything below is deterministic Python: retrieving the historical
+# financial figures needed for a forecast, deriving forecast assumptions
+# from that history, building a year-by-year Free Cash Flow to the Firm
+# (FCFF) forecast, discounting it, and turning the result into a plain-
+# English narrative from the actual computed numbers.
+#
+# Architecture (matches the "AI explains, doesn't invent" pattern already
+# used by the Buffett/Graham/Risk scores above):
+#
+#     yfinance data -> deterministic Python math (this section) ->
+#     DCFScenarioResult (plain dataclass, just numbers) -> UI displays the
+#     numbers + generate_dcf_narrative() turns them into a sentence.
+#
+# No step in this pipeline invents a number. generate_dcf_narrative() only
+# describes results that were already computed by run_dcf_advanced().
+# =========================================================================== #
+
+# =========================================================================== #
+# 1. Historical financials retrieval
+# =========================================================================== #
+
+@dataclass
+class HistoricalFinancials:
+    """Up to N years of the historical figures needed to build a forecast.
+
+    Columns from yfinance are most-recent-year-first; this class preserves
+    that order (index 0 = most recent year, index -1 = oldest year).
+    """
+
+    years: list[str]
+    revenue: list[float]
+    ebit: list[float]
+    da: list[float]
+    capex: list[float]
+    change_in_nwc: list[float]
+    effective_tax_rate: Optional[float]
+    data_warnings: list[str] = field(default_factory=list)
+
+
+def _first_available_row(df: Any, row_names: list[str]) -> Any:
+    """Return the first matching row (a pandas Series) from a yfinance
+    statement DataFrame, trying several possible row-label spellings,
+    since yfinance's exact labels can vary slightly by ticker/version."""
+    if df is None or df.empty:
+        return None
+    for name in row_names:
+        if name in df.index:
+            return df.loc[name]
+    return None
+
+
+def get_historical_financials(symbol: str, years: int = 3) -> Optional[HistoricalFinancials]:
+    """
+    Pull up to `years` years of Revenue, EBIT, D&A, CapEx, and change in
+    net working capital from yfinance's income statement and cash flow
+    statement, plus an effective tax rate.
+
+    Returns
+    -------
+    None
+        If no usable income statement data can be retrieved at all
+        (e.g. invalid ticker, or yfinance/network failure). The caller
+        (the Streamlit UI) is responsible for showing a clear message
+        rather than crashing.
+    HistoricalFinancials
+        Otherwise — with `data_warnings` populated whenever a specific
+        line item was missing and had to be estimated or defaulted, so
+        the UI can tell the user exactly what was approximated.
+    """
+    warnings: list[str] = []
+    try:
+        ticker = yf.Ticker(symbol.strip().upper())
+        income_stmt = ticker.income_stmt
+        cashflow = ticker.cashflow
+    except Exception:
+        return None
+
+    if income_stmt is None or income_stmt.empty:
+        return None
+
+    cols = list(income_stmt.columns)[:years]
+    if not cols:
+        return None
+    year_labels = [str(getattr(c, "year", c)) for c in cols]
+
+    revenue_row = _first_available_row(income_stmt, ["Total Revenue", "TotalRevenue"])
+    ebit_row = _first_available_row(income_stmt, ["EBIT", "Operating Income"])
+    pretax_row = _first_available_row(income_stmt, ["Pretax Income"])
+    tax_row = _first_available_row(income_stmt, ["Tax Provision"])
+
+    da_row = _first_available_row(
+        cashflow, ["Depreciation And Amortization", "Depreciation Amortization Depletion"]
+    )
+    capex_row = _first_available_row(cashflow, ["Capital Expenditure", "CapitalExpenditure"])
+    nwc_row = _first_available_row(cashflow, ["Change In Working Capital"])
+
+    if revenue_row is None:
+        # Without revenue there is nothing to build a forecast from.
+        return None
+
+    if ebit_row is None:
+        warnings.append(
+            "EBIT was not reported directly by the data source; Pretax "
+            "Income was used as a rough substitute."
+        )
+        ebit_row = pretax_row
+
+    def _val(row: Any, col: Any) -> float:
+        if row is None:
+            return float("nan")
+        try:
+            return float(row.get(col, float("nan")))
+        except Exception:
+            return float("nan")
+
+    revenue = [_val(revenue_row, c) for c in cols]
+    ebit = [_val(ebit_row, c) for c in cols]
+    da = [_val(da_row, c) if da_row is not None else 0.0 for c in cols]
+    capex_raw = [_val(capex_row, c) if capex_row is not None else 0.0 for c in cols]
+    # yfinance reports CapEx as a cash outflow (negative); we store the
+    # positive "amount spent" and subtract it explicitly in the formula.
+    capex = [abs(v) if v == v else 0.0 for v in capex_raw]
+    nwc_raw = [_val(nwc_row, c) if nwc_row is not None else 0.0 for c in cols]
+    # yfinance's "Change In Working Capital" is already a CASH FLOW STATEMENT
+    # figure: positive means NWC released cash (NWC decreased), negative
+    # means NWC absorbed cash (NWC increased). The textbook FCFF formula
+    # instead uses "increase in NWC" as a positive number that gets
+    # SUBTRACTED, so we flip the sign here to match that convention.
+    change_in_nwc = [-v if v == v else 0.0 for v in nwc_raw]
+
+    if da_row is None:
+        warnings.append("D&A was not available and was assumed to be $0 (this understates FCFF).")
+    if capex_row is None:
+        warnings.append("CapEx was not available and was assumed to be $0 (this overstates FCFF).")
+    if nwc_row is None:
+        warnings.append("Change in Net Working Capital was not available and was assumed to be $0.")
+
+    effective_tax_rate = None
+    if pretax_row is not None and tax_row is not None:
+        try:
+            pretax = float(pretax_row.iloc[0])
+            tax = float(tax_row.iloc[0])
+            if pretax > 0:
+                effective_tax_rate = max(0.0, min(0.40, tax / pretax))
+        except Exception:
+            pass
+    if effective_tax_rate is None:
+        warnings.append(
+            "Effective tax rate could not be computed from the data source; "
+            "defaulted to 21% (the current US federal statutory rate)."
+        )
+        effective_tax_rate = 0.21
+
+    return HistoricalFinancials(
+        years=year_labels,
+        revenue=revenue,
+        ebit=ebit,
+        da=da,
+        capex=capex,
+        change_in_nwc=change_in_nwc,
+        effective_tax_rate=effective_tax_rate,
+        data_warnings=warnings,
+    )
+
+
+def derive_base_assumptions(hist: HistoricalFinancials) -> dict[str, Optional[float]]:
+    """
+    Turn historical financials into suggested Base-case forecast
+    assumptions: average revenue growth, average EBIT margin, and average
+    D&A / CapEx / change-in-NWC as a % of revenue.
+
+    Returns None for any assumption that couldn't be computed (e.g. only
+    one year of history is available, so no growth rate can be derived).
+    """
+    # hist.revenue is most-recent-first; reverse to chronological order
+    # so growth = later / earlier - 1 reads naturally.
+    chron_rev = list(reversed(hist.revenue))
+    growth_rates = []
+    for i in range(1, len(chron_rev)):
+        prev, curr = chron_rev[i - 1], chron_rev[i]
+        if prev == prev and curr == curr and prev > 0:
+            growth_rates.append(curr / prev - 1)
+    avg_growth = sum(growth_rates) / len(growth_rates) if growth_rates else None
+
+    ebit_margins, da_pct, capex_pct, nwc_pct = [], [], [], []
+    for rev, ebit, da, capex, dnwc in zip(
+        hist.revenue, hist.ebit, hist.da, hist.capex, hist.change_in_nwc
+    ):
+        if rev == rev and rev > 0:
+            if ebit == ebit:
+                ebit_margins.append(ebit / rev)
+            da_pct.append(da / rev)
+            capex_pct.append(capex / rev)
+            nwc_pct.append(dnwc / rev)
+
+    def _avg(values: list[float]) -> Optional[float]:
+        return sum(values) / len(values) if values else None
+
+    return {
+        "revenue_growth": avg_growth,
+        "ebit_margin": _avg(ebit_margins),
+        "da_pct_revenue": _avg(da_pct),
+        "capex_pct_revenue": _avg(capex_pct),
+        "nwc_pct_revenue": _avg(nwc_pct),
+    }
+
+
+# =========================================================================== #
+# 2. WACC estimation
+# =========================================================================== #
+
+@dataclass
+class WACCResult:
+    cost_of_equity: float
+    cost_of_debt_pretax: float
+    cost_of_debt_aftertax: float
+    equity_weight: float
+    debt_weight: float
+    wacc: float
+
+
+def compute_wacc(
+    risk_free_rate: float,
+    equity_risk_premium: float,
+    beta: float,
+    credit_spread: float,
+    tax_rate: float,
+    market_cap: float,
+    total_debt: float,
+) -> WACCResult:
+    """
+    Estimate WACC using CAPM for cost of equity and a credit-spread proxy
+    for pre-tax cost of debt, weighted by market cap (equity) and total
+    debt at current market values.
+
+        Cost of Equity = risk_free_rate + beta * equity_risk_premium
+        Cost of Debt (after-tax) = (risk_free_rate + credit_spread) * (1 - tax_rate)
+        WACC = (E / (E+D)) * CoE + (D / (E+D)) * CoD_after_tax
+    """
+    cost_of_equity = risk_free_rate + beta * equity_risk_premium
+    cost_of_debt_pretax = risk_free_rate + credit_spread
+    cost_of_debt_aftertax = cost_of_debt_pretax * (1 - tax_rate)
+
+    total_value = max(market_cap + total_debt, 1e-9)
+    equity_weight = market_cap / total_value
+    debt_weight = total_debt / total_value
+
+    wacc = equity_weight * cost_of_equity + debt_weight * cost_of_debt_aftertax
+    return WACCResult(
+        cost_of_equity=cost_of_equity,
+        cost_of_debt_pretax=cost_of_debt_pretax,
+        cost_of_debt_aftertax=cost_of_debt_aftertax,
+        equity_weight=equity_weight,
+        debt_weight=debt_weight,
+        wacc=wacc,
+    )
+
+
+# =========================================================================== #
+# 3. Forecast build-up and the core DCF engine
+# =========================================================================== #
+
+@dataclass
+class ForecastYear:
+    year_label: str
+    revenue: float
+    ebit: float
+    nopat: float
+    da: float
+    capex: float
+    change_in_nwc: float
+    fcff: float
+    discount_factor: float
+    pv_fcff: float
+
+
+@dataclass
+class DCFScenarioResult:
+    scenario: str  # "Bear" / "Base" / "Bull" / "Sensitivity"
+    assumptions: dict[str, float]
+    forecast: list[ForecastYear]
+    terminal_value: float
+    pv_terminal_value: float
+    enterprise_value: float
+    net_debt: float
+    equity_value: float
+    shares_outstanding: Optional[float]
+    intrinsic_value_per_share: Optional[float]
+
+
+def build_fcff_forecast(
+    base_revenue: float,
+    revenue_growth: float,
+    ebit_margin: float,
+    tax_rate: float,
+    da_pct_revenue: float,
+    capex_pct_revenue: float,
+    nwc_pct_revenue: float,
+    wacc: float,
+    projection_years: int,
+) -> list[ForecastYear]:
+    """
+    Build a year-by-year FCFF forecast from top-line assumptions:
+
+        Revenue(t)  = Revenue(t-1) * (1 + revenue_growth)
+        EBIT(t)     = Revenue(t) * ebit_margin
+        NOPAT(t)    = EBIT(t) * (1 - tax_rate)
+        FCFF(t)     = NOPAT(t) + D&A(t) - CapEx(t) - ChangeInNWC(t)
+        PV[FCFF(t)] = FCFF(t) / (1 + wacc) ** t
+    """
+    forecast: list[ForecastYear] = []
+    revenue = base_revenue
+    for year in range(1, projection_years + 1):
+        revenue = revenue * (1 + revenue_growth)
+        ebit = revenue * ebit_margin
+        nopat = ebit * (1 - tax_rate)
+        da = revenue * da_pct_revenue
+        capex = revenue * capex_pct_revenue
+        change_in_nwc = revenue * nwc_pct_revenue
+        fcff = nopat + da - capex - change_in_nwc
+        discount_factor = (1 + wacc) ** year
+        pv_fcff = fcff / discount_factor
+        forecast.append(
+            ForecastYear(
+                year_label=f"Year {year}",
+                revenue=revenue,
+                ebit=ebit,
+                nopat=nopat,
+                da=da,
+                capex=capex,
+                change_in_nwc=change_in_nwc,
+                fcff=fcff,
+                discount_factor=discount_factor,
+                pv_fcff=pv_fcff,
+            )
+        )
+    return forecast
+
+
+def run_dcf_advanced(
+    scenario: str,
+    base_revenue: float,
+    revenue_growth: float,
+    ebit_margin: float,
+    tax_rate: float,
+    da_pct_revenue: float,
+    capex_pct_revenue: float,
+    nwc_pct_revenue: float,
+    wacc: float,
+    terminal_growth: float,
+    projection_years: int,
+    net_debt: float,
+    shares_outstanding: Optional[float],
+) -> DCFScenarioResult:
+    """Run one full scenario: forecast -> terminal value -> enterprise value
+    -> equity value -> intrinsic value per share."""
+    if wacc <= terminal_growth:
+        # A terminal value is mathematically invalid (negative or infinite)
+        # if the discount rate doesn't exceed the perpetual growth rate.
+        # Guard against it instead of crashing or returning garbage.
+        terminal_growth = max(0.0, wacc - 0.01)
+
+    forecast = build_fcff_forecast(
+        base_revenue,
+        revenue_growth,
+        ebit_margin,
+        tax_rate,
+        da_pct_revenue,
+        capex_pct_revenue,
+        nwc_pct_revenue,
+        wacc,
+        projection_years,
+    )
+
+    last_fcff = forecast[-1].fcff
+    terminal_value = last_fcff * (1 + terminal_growth) / (wacc - terminal_growth)
+    pv_terminal_value = terminal_value / (1 + wacc) ** projection_years
+
+    enterprise_value = sum(f.pv_fcff for f in forecast) + pv_terminal_value
+    equity_value = enterprise_value - net_debt
+
+    intrinsic_value_per_share = None
+    if shares_outstanding and shares_outstanding > 0:
+        intrinsic_value_per_share = equity_value / shares_outstanding
+
+    return DCFScenarioResult(
+        scenario=scenario,
+        assumptions={
+            "revenue_growth": revenue_growth,
+            "ebit_margin": ebit_margin,
+            "tax_rate": tax_rate,
+            "wacc": wacc,
+            "terminal_growth": terminal_growth,
+            "projection_years": projection_years,
+        },
+        forecast=forecast,
+        terminal_value=terminal_value,
+        pv_terminal_value=pv_terminal_value,
+        enterprise_value=enterprise_value,
+        net_debt=net_debt,
+        equity_value=equity_value,
+        shares_outstanding=shares_outstanding,
+        intrinsic_value_per_share=intrinsic_value_per_share,
+    )
+
+
+# =========================================================================== #
+# 4. Bear / Base / Bull scenarios
+# =========================================================================== #
+
+DEFAULT_SCENARIO_DELTAS: dict[str, float] = {
+    "revenue_growth": 0.02,    # Bear/Bull shift Base by +/- 2 percentage points
+    "ebit_margin": 0.015,      # +/- 1.5 percentage points
+    "wacc": 0.01,              # Bear = +1pp WACC (higher discount rate = more conservative)
+    "terminal_growth": 0.005,  # +/- 0.5 percentage points
+}
+
+
+def run_bear_base_bull(
+    base_revenue: float,
+    base_assumptions: dict[str, float],
+    net_debt: float,
+    shares_outstanding: Optional[float],
+    projection_years: int,
+    deltas: Optional[dict[str, float]] = None,
+) -> dict[str, DCFScenarioResult]:
+    """
+    Run Base with the assumptions given, then derive Bear and Bull by
+    shifting revenue growth, EBIT margin, WACC, and terminal growth by
+    fixed, labeled deltas in the unfavorable / favorable direction.
+    """
+    deltas = deltas or DEFAULT_SCENARIO_DELTAS
+    scenarios: dict[str, DCFScenarioResult] = {}
+
+    for label, sign in [("Bear", -1), ("Base", 0), ("Bull", 1)]:
+        wacc_sign = -sign  # Bear = HIGHER wacc (more conservative), so flip
+        scenarios[label] = run_dcf_advanced(
+            scenario=label,
+            base_revenue=base_revenue,
+            revenue_growth=base_assumptions["revenue_growth"] + sign * deltas["revenue_growth"],
+            ebit_margin=base_assumptions["ebit_margin"] + sign * deltas["ebit_margin"],
+            tax_rate=base_assumptions["tax_rate"],
+            da_pct_revenue=base_assumptions["da_pct_revenue"],
+            capex_pct_revenue=base_assumptions["capex_pct_revenue"],
+            nwc_pct_revenue=base_assumptions["nwc_pct_revenue"],
+            wacc=base_assumptions["wacc"] + wacc_sign * deltas["wacc"],
+            terminal_growth=base_assumptions["terminal_growth"] + sign * deltas["terminal_growth"],
+            projection_years=projection_years,
+            net_debt=net_debt,
+            shares_outstanding=shares_outstanding,
+        )
+    return scenarios
+
+
+# =========================================================================== #
+# 5. Sensitivity analysis (WACC x Terminal Growth)
+# =========================================================================== #
+
+def sensitivity_table(
+    base_revenue: float,
+    base_assumptions: dict[str, float],
+    net_debt: float,
+    shares_outstanding: Optional[float],
+    projection_years: int,
+    wacc_range: list[float],
+    terminal_growth_range: list[float],
+) -> list[list[Optional[float]]]:
+    """
+    Build a WACC x Terminal-Growth grid of intrinsic value per share,
+    holding all other Base assumptions fixed. Rows = wacc_range,
+    columns = terminal_growth_range.
+    """
+    grid: list[list[Optional[float]]] = []
+    for wacc in wacc_range:
+        row: list[Optional[float]] = []
+        for tg in terminal_growth_range:
+            result = run_dcf_advanced(
+                scenario="Sensitivity",
+                base_revenue=base_revenue,
+                revenue_growth=base_assumptions["revenue_growth"],
+                ebit_margin=base_assumptions["ebit_margin"],
+                tax_rate=base_assumptions["tax_rate"],
+                da_pct_revenue=base_assumptions["da_pct_revenue"],
+                capex_pct_revenue=base_assumptions["capex_pct_revenue"],
+                nwc_pct_revenue=base_assumptions["nwc_pct_revenue"],
+                wacc=wacc,
+                terminal_growth=tg,
+                projection_years=projection_years,
+                net_debt=net_debt,
+                shares_outstanding=shares_outstanding,
+            )
+            row.append(result.intrinsic_value_per_share)
+        grid.append(row)
+    return grid
+
+
+# =========================================================================== #
+# 6. Suitability warnings
+# =========================================================================== #
+
+_BANK_INSURANCE_KEYWORDS = ["bank", "insurance", "reinsurance", "thrifts", "credit services"]
+_CYCLICAL_INDUSTRY_KEYWORDS = [
+    "oil", "gas", "steel", "mining", "airline", "auto", "shipping",
+    "semiconductor", "metals", "coal", "drilling",
+]
+
+
+def check_dcf_suitability(
+    sector: Optional[str],
+    industry: Optional[str],
+    base_fcff: Optional[float],
+    hist: Optional[HistoricalFinancials],
+    revenue_growth_assumption: float,
+) -> list[str]:
+    """
+    Return plain-English warnings about why a basic single-stage FCFF DCF
+    may be less reliable for this company. An EMPTY list does not mean the
+    DCF is guaranteed reliable — only that these specific heuristic checks
+    didn't flag anything.
+    """
+    warnings: list[str] = []
+    industry_l = (industry or "").lower()
+    sector_l = (sector or "").lower()
+
+    if any(kw in industry_l or kw in sector_l for kw in _BANK_INSURANCE_KEYWORDS):
+        warnings.append(
+            "This company is in banking, insurance, or financial services. "
+            "A basic FCFF DCF is generally NOT appropriate here — these "
+            "businesses' capital structure and cash flow drivers (deposits, "
+            "loan loss provisions, float) don't map cleanly onto this model. "
+            "A dividend discount model or excess-return model is typically "
+            "used instead."
+        )
+
+    if any(kw in industry_l for kw in _CYCLICAL_INDUSTRY_KEYWORDS):
+        warnings.append(
+            "This industry is commonly cyclical (revenue/margins swing with "
+            "the broader economic or commodity cycle). A single Base growth "
+            "and margin assumption applied evenly across 5 years may not "
+            "reflect boom/bust swings — treat the Bear-to-Bull range as more "
+            "informative than any single number."
+        )
+
+    if base_fcff is not None and base_fcff <= 0:
+        warnings.append(
+            "This company's most recent free cash flow is negative or zero. "
+            "Since a DCF discounts future cash flow, a negative starting "
+            "point makes the forecast far more assumption-dependent and "
+            "less reliable."
+        )
+
+    if hist is None or len(hist.years) < 2:
+        warnings.append(
+            "Limited multi-year financial history is available for this "
+            "ticker, so growth/margin assumptions rest on very little data "
+            "(or defaults) — treat the output with extra caution. This is "
+            "common for newly public or very young companies."
+        )
+
+    if revenue_growth_assumption > 0.25:
+        warnings.append(
+            "The revenue growth assumption is very high (over 25% per year). "
+            "Sustaining that for 5 straight years is uncommon in practice, "
+            "and small changes to this single number will swing the "
+            "valuation a lot."
+        )
+
+    return warnings
+
+
+# =========================================================================== #
+# 7. Plain-English narrative (the "AI explains, doesn't invent" step)
+# =========================================================================== #
+
+def generate_dcf_narrative(
+    company_name: str,
+    symbol: str,
+    scenarios: dict[str, DCFScenarioResult],
+    current_price: Optional[float],
+) -> str:
+    """
+    Turn ALREADY-COMPUTED scenario results into a plain-English summary.
+
+    This function performs no valuation math of its own and invents no
+    numbers — it only describes results produced upstream by
+    run_dcf_advanced() / run_bear_base_bull(), the same "numbers first,
+    narrative second" pattern the app already uses for its Buffett/Graham/
+    Risk scores.
+    """
+    base = scenarios.get("Base")
+    if base is None or base.intrinsic_value_per_share is None:
+        return (
+            f"A DCF could not produce a per-share estimate for {company_name} "
+            f"({symbol}) — shares outstanding data was unavailable."
+        )
+
+    iv = base.intrinsic_value_per_share
+    wacc = base.assumptions["wacc"]
+    tg = base.assumptions["terminal_growth"]
+
+    lines = [
+        f"Using a WACC of {wacc:.1%} and a terminal growth rate of {tg:.1%}, "
+        f"the Base-case model estimates {company_name} ({symbol})'s intrinsic "
+        f"value at ${iv:,.2f} per share."
+    ]
+
+    if current_price:
+        diff_pct = (iv - current_price) / current_price * 100
+        if diff_pct > 0:
+            lines.append(
+                f"That is {diff_pct:.1f}% above the current price of "
+                f"${current_price:,.2f} — under these assumptions, the model "
+                f"considers the stock potentially undervalued."
+            )
+        else:
+            lines.append(
+                f"That is {abs(diff_pct):.1f}% below the current price of "
+                f"${current_price:,.2f} — under these assumptions, the model "
+                f"considers the stock potentially overvalued."
+            )
+
+    bear, bull = scenarios.get("Bear"), scenarios.get("Bull")
+    if bear and bull and bear.intrinsic_value_per_share and bull.intrinsic_value_per_share:
+        lines.append(
+            f"Across the Bear-to-Bull range, the estimate spans "
+            f"${bear.intrinsic_value_per_share:,.2f} to "
+            f"${bull.intrinsic_value_per_share:,.2f} per share — that spread "
+            f"reflects how sensitive DCF outputs are to growth, margin, and "
+            f"discount-rate assumptions. It is not a prediction of where the "
+            f"stock will actually trade."
+        )
+
+    return " ".join(lines)
+
+
+# =========================================================================== #
 # SECTION 6: NEWS FORMATTING (originally news.py)
 # =========================================================================== #
+
+
 def normalize_news_item(raw: dict[str, Any]) -> dict[str, Any]:
     """
     yfinance's `Ticker.news` payload has shifted shape across versions
@@ -1590,6 +2151,56 @@ METRIC_EDUCATION: dict[str, dict[str, str]] = {
         "fun_fact": "EBITDA is often used in valuation ratios like EV/EBITDA, especially for capital-intensive businesses like telecoms and airlines.",
         "common_mistake": "Students often treat EBITDA as equivalent to cash flow, but it ignores capital expenditures and real cash costs like interest and taxes.",
     },
+    # ----- NEW: DCF MODULE EDUCATION CONTENT ----- #
+    "WACC": {
+        "definition": "WACC (Weighted Average Cost of Capital) is the average rate of return a company must pay to all of its investors — stockholders and lenders — blended by how much of the company is financed by each.",
+        "why_it_matters": "It's the discount rate used in a DCF to convert future cash into today's dollars — a higher WACC makes future cash worth less today, and vice versa.",
+        "example": "If a company is 80% financed by stock (costing 10%/year) and 20% by debt (costing 5%/year after tax), WACC = 0.8×10% + 0.2×5% = 9%.",
+        "analogy": "It's like the blended interest rate on a household that has both a low-interest mortgage and a higher-interest credit card — the overall rate depends on how much is owed on each.",
+        "fun_fact": "Small changes in WACC can swing a DCF valuation by 20-30% or more — it's one of the most sensitive inputs in the whole model.",
+        "common_mistake": "Students often assume a lower WACC is always 'better,' but WACC should reflect real investor risk, not be lowered just to produce a higher valuation.",
+    },
+    "NOPAT": {
+        "definition": "NOPAT (Net Operating Profit After Tax) is a company's operating profit after removing taxes, but before subtracting interest payments.",
+        "why_it_matters": "It measures core-business profitability independent of how the company is financed with debt — exactly what a DCF needs for unbiased cash flow.",
+        "example": "If EBIT is $100 and the tax rate is 25%, NOPAT = $100 × (1 − 0.25) = $75.",
+        "analogy": "It's like your take-home pay after taxes, but before rent or a car loan — it isolates what your job earned you from how you chose to finance your life.",
+        "fun_fact": "NOPAT deliberately ignores interest expense, because a DCF discounts cash available to ALL investors (stock AND debt holders), not just shareholders.",
+        "common_mistake": "Students often confuse NOPAT with net income — net income subtracts interest expense, NOPAT does not.",
+    },
+    "EBIT": {
+        "definition": "EBIT (Earnings Before Interest and Taxes) is a company's profit from core operations, before interest payments on debt or income taxes.",
+        "why_it_matters": "It shows how profitable the underlying business is, independent of financing or tax rate — a fair starting point for valuation.",
+        "example": "Revenue $500 − Cost of Goods Sold $300 − Operating Expenses $100 = EBIT of $100.",
+        "analogy": "It's like judging how good a lemonade stand's business idea is before considering whether it was funded by a loan (interest) or how much tax the town charges.",
+        "fun_fact": "EBIT is sometimes called 'operating income' — they're often (though not always) the exact same line on a company's income statement.",
+        "common_mistake": "Students often mix up EBIT with EBITDA — EBIT already includes depreciation and amortization as expenses; EBITDA adds them back.",
+    },
+    "Terminal Value": {
+        "definition": "Terminal Value is the estimated value of all of a company's cash flows beyond the explicit forecast period, assumed to grow at a constant rate forever.",
+        "why_it_matters": "A company doesn't stop existing after 5 years — Terminal Value captures 'everything after that' in one number, and often makes up the majority of a DCF's total value.",
+        "example": "If Year 5 FCFF is $200, terminal growth is 3%, and WACC is 9%, Terminal Value ≈ $200 × 1.03 / (0.09 − 0.03) ≈ $3,433.",
+        "analogy": "It's like valuing a fruit tree by estimating every future harvest for as long as it keeps producing, discounted back to today — not just counting this year's apples.",
+        "fun_fact": "In many real-world DCFs, Terminal Value accounts for 60-80% of the total estimated value.",
+        "common_mistake": "Students often forget Terminal Value must itself be discounted back to today's dollars, and that the formula breaks if growth is set equal to or above WACC.",
+    },
+    "Net Working Capital (NWC)": {
+        "definition": "Net Working Capital is the cash tied up in day-to-day operations — mainly inventory and money owed by customers, minus money owed to suppliers.",
+        "why_it_matters": "As a company grows, it usually ties up MORE cash in things like inventory before that cash comes back — an increase in NWC is a real cost that reduces free cash flow.",
+        "example": "If inventory and unpaid customer bills grow $50 more than what's owed to suppliers, that $50 is cash tied up and unavailable this year.",
+        "analogy": "It's like a lemonade stand needing to buy a bigger stock of lemons and sugar before it can sell more lemonade — that upfront cash is tied up even though the stand is growing.",
+        "fun_fact": "Subscription software companies often have NEGATIVE change in NWC as they grow, since customers pay upfront — growth actually generates extra cash instead of using it.",
+        "common_mistake": "Students often assume growth is always cash-positive, but for many businesses fast growth actually consumes cash in the short term via rising NWC.",
+    },
+    "FCFF": {
+        "definition": "Free Cash Flow to the Firm (FCFF) is the cash a company generates that's available to ALL investors — stockholders and lenders — after operating costs and reinvestment.",
+        "why_it_matters": "FCFF is the actual number a DCF discounts — it's the cash the company could hand to investors each year, which is exactly what a DCF is trying to value.",
+        "example": "FCFF = NOPAT + D&A − CapEx − Change in NWC. If NOPAT is $75, D&A is $20, CapEx is $30, and Change in NWC is $5: FCFF = 75+20−30−5 = $60.",
+        "analogy": "It's like your true money left over at month's end — take-home pay, plus adding back non-cash costs, minus what you spent on a car, minus extra cash tied up in a bigger grocery stockpile.",
+        "fun_fact": "FCFF is calculated BEFORE debt payments — that's what makes it usable to value the whole company (Enterprise Value) before separately subtracting debt to reach Equity Value.",
+        "common_mistake": "Students often try to build FCFF from Net Income instead of EBIT — but Net Income already subtracts interest expense, double-counting financing costs WACC already accounts for.",
+    },
+    # ----- END NEW: DCF MODULE EDUCATION CONTENT ----- #
 }
 
 
@@ -3049,71 +3660,261 @@ with tab_valuation:
             st.metric("Margin of Safety vs. Current Price", f"{mos:+.2f}%")
 
     st.divider()
-    st.markdown("#### Discounted Cash Flow (DCF) Calculator")
+    # ================================================================= #
+    # NEW: FORECAST-DRIVEN DCF VALUATION MODULE
+    # Replaces the old single-line "grow last year's FCF by X%" model
+    # with a proper Revenue -> EBIT -> NOPAT -> FCFF build-up, an
+    # estimated WACC, Bear/Base/Bull scenarios, and a sensitivity table.
+    # All math lives in SECTION 5B above (pure functions, no Streamlit
+    # dependency); this block is UI only.
+    # ================================================================= #
+    st.markdown("#### Discounted Cash Flow (DCF) Valuation")
     st.caption(
-        "Adjust the assumptions below to build your own DCF estimate. "
-        "This is a simplified two-stage model intended for educational use."
+        "A forecast-driven DCF: historical Revenue → EBIT → NOPAT → FCFF, "
+        "discounted using an estimated WACC, across Bear / Base / Bull scenarios."
     )
 
-    base_fcf = info.get("freeCashflow") or 0
-    shares_out = info.get("sharesOutstanding")
-    total_debt = info.get("totalDebt") or 0
-    total_cash = info.get("totalCash") or 0
-    net_debt = (total_debt or 0) - (total_cash or 0)
+    hist_financials = get_historical_financials(symbol_input)
 
-    dcf_col1, dcf_col2, dcf_col3 = st.columns(3)
-    with dcf_col1:
-        input_fcf = st.number_input(
-            "Base Free Cash Flow ($)", value=float(base_fcf) if base_fcf else 1_000_000_000.0, step=1_000_000.0
+    if hist_financials is None:
+        st.warning(
+            f"Historical financial statement data isn't available for "
+            f"{symbol_input}, so a forecast-driven DCF can't be built for "
+            f"this ticker. Try a different company."
         )
-        growth_rate = st.slider("Growth Rate (Years 1-5)", 0.0, 30.0, 8.0, 0.5) / 100
-    with dcf_col2:
-        discount_rate = st.slider("Discount Rate (WACC)", 4.0, 20.0, 9.0, 0.5) / 100
-        terminal_growth = st.slider("Terminal Growth Rate", 0.0, 5.0, 2.5, 0.1) / 100
-    with dcf_col3:
-        projection_years = st.slider("Projection Years", 3, 10, 5, 1)
-        input_net_debt = st.number_input("Net Debt ($)", value=float(net_debt))
-
-    dcf_result = run_dcf(
-        base_fcf=input_fcf,
-        growth_rate=growth_rate,
-        discount_rate=discount_rate,
-        terminal_growth_rate=terminal_growth,
-        projection_years=projection_years,
-        net_debt=input_net_debt,
-        shares_outstanding=shares_out,
-    )
-
-    res_col1, res_col2, res_col3 = st.columns(3)
-    res_col1.metric("Enterprise Value", fmt_large_number(dcf_result.enterprise_value))
-    res_col2.metric("Equity Value", fmt_large_number(dcf_result.equity_value))
-    if dcf_result.intrinsic_value_per_share:
-        res_col3.metric("Intrinsic Value / Share", f"${dcf_result.intrinsic_value_per_share:.2f}")
-        if live.get("price"):
-            dcf_mos = margin_of_safety(dcf_result.intrinsic_value_per_share, live["price"])
-            if dcf_mos is not None:
-                st.metric("DCF Margin of Safety", f"{dcf_mos:+.2f}%")
     else:
-        res_col3.metric("Intrinsic Value / Share", "N/A (shares outstanding unavailable)")
+        if hist_financials.data_warnings:
+            with st.expander("⚠️ Data Notes", expanded=False):
+                for note in hist_financials.data_warnings:
+                    st.caption(f"• {note}")
 
-    with st.expander("📊 Projected Cash Flow Detail"):
-        proj_df = pd.DataFrame(
-            {
-                "Year": list(range(1, projection_years + 1)),
-                "Projected FCF": dcf_result.projected_fcfs,
-                "Discounted FCF": dcf_result.discounted_fcfs,
-            }
+        derived = derive_base_assumptions(hist_financials)
+        default_growth = derived["revenue_growth"] if derived["revenue_growth"] is not None else 0.08
+        default_margin = derived["ebit_margin"] if derived["ebit_margin"] is not None else 0.15
+        default_da_pct = derived["da_pct_revenue"] if derived["da_pct_revenue"] is not None else 0.04
+        default_capex_pct = derived["capex_pct_revenue"] if derived["capex_pct_revenue"] is not None else 0.05
+        default_nwc_pct = derived["nwc_pct_revenue"] if derived["nwc_pct_revenue"] is not None else 0.01
+        default_tax_rate = hist_financials.effective_tax_rate or 0.21
+
+        beta_val = info.get("beta") or 1.0
+        market_cap_val = info.get("marketCap") or 0.0
+        total_debt_val = info.get("totalDebt") or 0.0
+        risk_free_rate = 0.04
+        equity_risk_premium = 0.05
+        credit_spread = 0.015
+
+        wacc_estimate = compute_wacc(
+            risk_free_rate=risk_free_rate,
+            equity_risk_premium=equity_risk_premium,
+            beta=beta_val,
+            credit_spread=credit_spread,
+            tax_rate=default_tax_rate,
+            market_cap=market_cap_val,
+            total_debt=total_debt_val,
         )
-        st.dataframe(proj_df, use_container_width=True)
+
+        st.markdown("##### Base-Case Assumptions")
         st.caption(
-            f"Terminal Value: {fmt_large_number(dcf_result.terminal_value)} | "
-            f"Discounted Terminal Value: {fmt_large_number(dcf_result.discounted_terminal_value)}"
+            "Defaults are derived from up to 3 years of financial history "
+            "and an estimated WACC — adjust anything below."
         )
+        a_col1, a_col2, a_col3 = st.columns(3)
+        with a_col1:
+            rev_growth_input = st.slider(
+                "Revenue Growth", -10.0, 40.0, round(default_growth * 100, 1), 0.5, key="dcf2_rev_growth"
+            ) / 100
+            ebit_margin_input = st.slider(
+                "EBIT Margin", 0.0, 60.0, round(default_margin * 100, 1), 0.5, key="dcf2_ebit_margin"
+            ) / 100
+        with a_col2:
+            tax_rate_input = st.slider(
+                "Tax Rate", 0.0, 40.0, round(default_tax_rate * 100, 1), 0.5, key="dcf2_tax_rate"
+            ) / 100
+            wacc_input = st.slider(
+                "WACC", 3.0, 20.0, round(wacc_estimate.wacc * 100, 1), 0.1, key="dcf2_wacc"
+            ) / 100
+        with a_col3:
+            terminal_growth_input = st.slider(
+                "Terminal Growth", 0.0, 5.0, 2.5, 0.1, key="dcf2_terminal_growth"
+            ) / 100
+            projection_years_input = st.slider("Forecast Years", 3, 10, 5, 1, key="dcf2_years")
+
+        with st.expander("🧮 How the suggested WACC was built"):
+            st.markdown(
+                f"- Cost of Equity (CAPM) = {risk_free_rate:.1%} risk-free "
+                f"+ {beta_val:.2f} beta × {equity_risk_premium:.1%} equity risk premium "
+                f"= **{wacc_estimate.cost_of_equity:.2%}**\n"
+                f"- Pre-tax Cost of Debt = {risk_free_rate:.1%} risk-free "
+                f"+ {credit_spread:.1%} credit spread = **{wacc_estimate.cost_of_debt_pretax:.2%}**\n"
+                f"- After-tax Cost of Debt = pre-tax × (1 − {tax_rate_input:.1%} tax) "
+                f"= **{wacc_estimate.cost_of_debt_aftertax:.2%}**\n"
+                f"- Weights: {wacc_estimate.equity_weight:.1%} equity / "
+                f"{wacc_estimate.debt_weight:.1%} debt (by market cap vs. total debt)\n"
+                f"- **Suggested WACC = {wacc_estimate.wacc:.2%}** "
+                f"(used as the slider default above — feel free to override it)"
+            )
+
+        base_revenue = hist_financials.revenue[0]  # most recent year, most-recent-first order
+        net_debt_val = total_debt_val - (info.get("totalCash") or 0.0)
+        shares_out_val = info.get("sharesOutstanding")
+
+        base_assumptions_dict = {
+            "revenue_growth": rev_growth_input,
+            "ebit_margin": ebit_margin_input,
+            "tax_rate": tax_rate_input,
+            "da_pct_revenue": default_da_pct,
+            "capex_pct_revenue": default_capex_pct,
+            "nwc_pct_revenue": default_nwc_pct,
+            "wacc": wacc_input,
+            "terminal_growth": terminal_growth_input,
+        }
+
+        scenarios = run_bear_base_bull(
+            base_revenue=base_revenue,
+            base_assumptions=base_assumptions_dict,
+            net_debt=net_debt_val,
+            shares_outstanding=shares_out_val,
+            projection_years=projection_years_input,
+        )
+        base_result = scenarios["Base"]
+
+        suitability_warnings = check_dcf_suitability(
+            sector=info.get("sector"),
+            industry=info.get("industry"),
+            base_fcff=base_result.forecast[0].fcff if base_result.forecast else None,
+            hist=hist_financials,
+            revenue_growth_assumption=rev_growth_input,
+        )
+        if suitability_warnings:
+            with st.expander("⚠️ Is a basic DCF appropriate for this company?", expanded=True):
+                for warning_text in suitability_warnings:
+                    st.warning(warning_text)
+
+        st.markdown("##### Bear / Base / Bull Valuation")
+        scenario_cols = st.columns(3)
+        for scenario_col, scenario_label in zip(scenario_cols, ["Bear", "Base", "Bull"]):
+            scenario_result = scenarios[scenario_label]
+            with scenario_col:
+                st.markdown(f"**{scenario_label} Case**")
+                if scenario_result.intrinsic_value_per_share:
+                    st.metric(
+                        "Intrinsic Value / Share",
+                        f"${scenario_result.intrinsic_value_per_share:,.2f}",
+                    )
+                    if live.get("price"):
+                        scenario_mos = margin_of_safety(
+                            scenario_result.intrinsic_value_per_share, live["price"]
+                        )
+                        if scenario_mos is not None:
+                            st.caption(f"{scenario_mos:+.1f}% vs. current price")
+                else:
+                    st.metric("Intrinsic Value / Share", "N/A")
+
+        st.markdown("##### Base-Case 5-Year Forecast")
+        forecast_df = pd.DataFrame(
+            [
+                {
+                    "Year": f.year_label,
+                    "Revenue": f.revenue,
+                    "EBIT": f.ebit,
+                    "NOPAT": f.nopat,
+                    "D&A": f.da,
+                    "CapEx": f.capex,
+                    "Δ NWC": f.change_in_nwc,
+                    "FCFF": f.fcff,
+                    "PV of FCFF": f.pv_fcff,
+                }
+                for f in base_result.forecast
+            ]
+        )
+        money_cols = [c for c in forecast_df.columns if c != "Year"]
+        st.dataframe(
+            forecast_df.style.format({c: "${:,.0f}" for c in money_cols}),
+            use_container_width=True,
+        )
+        st.caption(
+            f"Terminal Value: {fmt_large_number(base_result.terminal_value)} | "
+            f"PV of Terminal Value: {fmt_large_number(base_result.pv_terminal_value)} | "
+            f"Enterprise Value: {fmt_large_number(base_result.enterprise_value)} | "
+            f"Equity Value: {fmt_large_number(base_result.equity_value)}"
+        )
+
+        # Deterministic Python computed every number above; this narrative
+        # only DESCRIBES those already-computed results in plain English —
+        # it does not perform any valuation math of its own.
+        narrative = generate_dcf_narrative(company_name, symbol_input, scenarios, live.get("price"))
+        st.info(f"🤖 {narrative}")
+
+        st.markdown("##### Sensitivity: WACC vs. Terminal Growth")
+        st.caption("Intrinsic value per share across a range of WACC and terminal growth combinations, holding all other Base-case assumptions fixed.")
+        wacc_range = [wacc_input + d for d in (-0.02, -0.01, 0.0, 0.01, 0.02)]
+        tg_range = [terminal_growth_input + d for d in (-0.01, -0.005, 0.0, 0.005, 0.01)]
+        sensitivity_grid = sensitivity_table(
+            base_revenue=base_revenue,
+            base_assumptions=base_assumptions_dict,
+            net_debt=net_debt_val,
+            shares_outstanding=shares_out_val,
+            projection_years=projection_years_input,
+            wacc_range=wacc_range,
+            terminal_growth_range=tg_range,
+        )
+
+        sens_labels_wacc = [f"{w:.1%}" for w in wacc_range]
+        sens_labels_tg = [f"{t:.1%}" for t in tg_range]
+        sens_df = pd.DataFrame(sensitivity_grid, index=sens_labels_wacc, columns=sens_labels_tg)
+        st.dataframe(
+            sens_df.style.format(lambda v: f"${v:,.2f}" if v is not None else "N/A"),
+            use_container_width=True,
+        )
+
+        heatmap_text = [
+            [f"${v:,.0f}" if v is not None else "N/A" for v in row] for row in sensitivity_grid
+        ]
+        fig_sensitivity = go.Figure(
+            data=go.Heatmap(
+                z=sensitivity_grid,
+                x=sens_labels_tg,
+                y=sens_labels_wacc,
+                colorscale="RdYlGn",
+                text=heatmap_text,
+                texttemplate="%{text}",
+                colorbar=dict(title="$/share"),
+            )
+        )
+        fig_sensitivity = _base_layout(fig_sensitivity, title="Intrinsic Value / Share Sensitivity", height=400)
+        fig_sensitivity.update_layout(xaxis_title="Terminal Growth Rate", yaxis_title="WACC")
+        st.plotly_chart(fig_sensitivity, use_container_width=True, key="dcf_sensitivity_heatmap")
+
+        if education_mode:
+            with st.expander("📚 See the actual FCFF calculation for this company"):
+                f1 = base_result.forecast[0]
+                st.markdown(
+                    f"**FCFF (Year 1) = EBIT × (1 − Tax Rate) + D&A − CapEx − ΔNWC**\n\n"
+                    f"= {fmt_large_number(f1.ebit)} × (1 − {tax_rate_input:.1%}) "
+                    f"+ {fmt_large_number(f1.da)} − {fmt_large_number(f1.capex)} "
+                    f"− {fmt_large_number(f1.change_in_nwc)}\n\n"
+                    f"= {fmt_large_number(f1.nopat)} (NOPAT) + {fmt_large_number(f1.da)} "
+                    f"− {fmt_large_number(f1.capex)} − {fmt_large_number(f1.change_in_nwc)}\n\n"
+                    f"= **{fmt_large_number(f1.fcff)}**"
+                )
+            st.markdown("##### 📖 DCF Concepts Explained")
+            for _dcf_term in ["WACC", "NOPAT", "EBIT", "Terminal Value", "Net Working Capital (NWC)", "FCFF"]:
+                render_metric_education(_dcf_term)
 
     st.info(
-        "⚠️ Disclaimer: Valuation estimates are for educational purposes only "
-        "and should not be considered investment advice."
+        "⚠️ DCF valuation is highly sensitive to its assumptions and should "
+        "NOT be treated as a guaranteed prediction of future stock price. "
+        "Small changes in growth, margin, WACC, or terminal growth can "
+        "produce very different results — that's inherent to the model, "
+        "not a flaw in the calculation. A basic DCF like this one is also "
+        "generally less reliable for banks, insurers, companies with "
+        "negative free cash flow, very young companies, highly cyclical "
+        "businesses, and extremely high-growth companies (see the warnings "
+        "above if any applied to this ticker)."
     )
+    # ================================================================= #
+    # END NEW: FORECAST-DRIVEN DCF VALUATION MODULE
+    # ================================================================= #
 
 
 # --------------------------------------------------------------------------- #
