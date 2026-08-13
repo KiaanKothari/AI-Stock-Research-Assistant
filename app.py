@@ -2809,21 +2809,78 @@ def backtest_equity_chart(equity_df: pd.DataFrame, symbol: str) -> go.Figure:
 # --------------------------------------------------------------------------- #
 
 def build_custom_css(theme_mode: str) -> str:
-    """Return the app's custom CSS, adapted for the selected theme mode."""
+    """
+    Return the app's custom CSS, adapted for the selected theme mode.
+
+    Typography: Inter (a highly legible, professional UI/display face used
+    by Stripe, Linear, and most modern fintech products) for all headings
+    and body text, paired with JetBrains Mono — a monospace face — for
+    numeric data specifically (metric values, dataframes). Real trading
+    terminals set figures in monospace so digits align in a fixed-width
+    grid; that convention is deliberately carried through here rather than
+    leaving every number in the same proportional font as the prose.
+    """
     if theme_mode == "Light":
         bg_color = "#FFFFFF"
+        surface_color = "#F7F8FA"
         text_color = "#1A1A1A"
+        muted_text_color = "#5B6472"
         metric_bg = "rgba(0, 0, 0, 0.03)"
-        metric_border = "rgba(0, 0, 0, 0.12)"
+        metric_border = "rgba(0, 0, 0, 0.10)"
+        tab_active_bg = "rgba(0, 0, 0, 0.05)"
+        divider_color = "rgba(0, 0, 0, 0.08)"
     else:
         bg_color = "#0E1117"
-        text_color = "#D1D5DB"
+        surface_color = "#161B22"
+        text_color = "#E6E8EB"
+        muted_text_color = "#9AA4B2"
         metric_bg = "rgba(127, 127, 127, 0.08)"
-        metric_border = "rgba(127, 127, 127, 0.18)"
+        metric_border = "rgba(127, 127, 127, 0.16)"
+        tab_active_bg = "rgba(245, 166, 35, 0.10)"
+        divider_color = "rgba(255, 255, 255, 0.08)"
+
+    accent = "#F5A623"
 
     return f"""
 <style>
-    .stApp {{ background-color: {bg_color}; color: {text_color}; }}
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+    html, body, .stApp, [class*="css"] {{
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+    }}
+
+    .stApp {{
+        background-color: {bg_color};
+        color: {text_color};
+        font-size: 0.95rem;
+        line-height: 1.55;
+    }}
+
+    /* Headings: tighter tracking, heavier weight, clear hierarchy */
+    h1, h2, h3, h4 {{
+        font-family: 'Inter', sans-serif !important;
+        font-weight: 700;
+        letter-spacing: -0.4px;
+        color: {text_color};
+    }}
+    h1 {{ font-size: 1.65rem; }}
+    h2 {{ font-size: 1.3rem; }}
+    h3, h4 {{ font-size: 1.05rem; margin-top: 0.4rem; }}
+    p, span, div, label {{ font-family: 'Inter', sans-serif; }}
+
+    /* Numeric data gets the monospace utility face — metrics, dataframes */
+    div[data-testid="stMetricValue"] {{
+        font-family: 'JetBrains Mono', monospace !important;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+    }}
+    div[data-testid="stMetricDelta"] {{
+        font-family: 'JetBrains Mono', monospace !important;
+    }}
+    .stDataFrame, .stDataFrame [class*="glide"] {{
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 0.85rem !important;
+    }}
 
     /* Metric cards */
     div[data-testid="stMetric"] {{
@@ -2832,18 +2889,57 @@ def build_custom_css(theme_mode: str) -> str:
         border-radius: 10px;
         padding: 14px 16px 10px 16px;
     }}
-    div[data-testid="stMetricLabel"] {{ font-size: 0.78rem; opacity: 0.8; }}
+    div[data-testid="stMetricLabel"] {{
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: {muted_text_color};
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        opacity: 1;
+    }}
 
-    /* Section headers */
-    h1, h2, h3 {{ letter-spacing: -0.3px; color: {text_color}; }}
+    /* Sidebar */
+    section[data-testid="stSidebar"] {{
+        background-color: {surface_color};
+        border-right: 1px solid {divider_color};
+    }}
 
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {{ gap: 4px; }}
+    /* Tabs — wrap onto multiple rows instead of forcing a horizontal
+       scrollbar, and give the active tab a clear, quiet indicator rather
+       than a loud full-background highlight. */
+    .stTabs [data-baseweb="tab-list"] {{
+        gap: 2px;
+        flex-wrap: wrap;
+        row-gap: 4px;
+        border-bottom: 1px solid {divider_color};
+    }}
     .stTabs [data-baseweb="tab"] {{
         border-radius: 8px 8px 0 0;
-        padding: 8px 16px;
+        padding: 8px 14px;
         font-weight: 600;
+        font-size: 0.88rem;
+        color: {muted_text_color};
+        transition: background-color 0.15s ease, color 0.15s ease;
     }}
+    .stTabs [data-baseweb="tab"]:hover {{
+        background-color: {tab_active_bg};
+        color: {text_color};
+    }}
+    .stTabs [aria-selected="true"] {{
+        background-color: {tab_active_bg};
+        color: {accent} !important;
+        border-bottom: 2px solid {accent};
+    }}
+
+    /* Buttons */
+    .stButton button {{
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 0.88rem;
+    }}
+
+    /* Dividers: quieter than Streamlit's default */
+    hr {{ border-color: {divider_color}; }}
 
     /* Ticker badge */
     .ticker-badge {{
@@ -2857,8 +2953,8 @@ def build_custom_css(theme_mode: str) -> str:
         letter-spacing: 0.5px;
     }}
 
-    .price-up {{ color: #00C805; font-weight: 700; }}
-    .price-down {{ color: #FF3B30; font-weight: 700; }}
+    .price-up {{ color: #00C805; font-weight: 700; font-family: 'JetBrains Mono', monospace; }}
+    .price-down {{ color: #FF3B30; font-weight: 700; font-family: 'JetBrains Mono', monospace; }}
 
     footer {{ visibility: hidden; }}
 </style>
@@ -3278,57 +3374,55 @@ st.divider()
 # Tabs
 # --------------------------------------------------------------------------- #
 
-# ----- NEW: EDUCATION MODE — conditionally add "Learn" and "Classroom" -----
-# tabs only when Education Mode is on, so tab layout is identical to the
-# original app when Education Mode is off (Requirement 1).
-# ----- NEW: Aug 2026 update — Alerts / Peers / Backtest are always visible. -----
-# ----- NEW: v1.3 — Dividends tab is always visible. -----
-_tab_labels = [
-    "Overview",
-    "Technical",
-    "Fundamentals",
-    "Financials",
-    "Analyst",
-    "News",
-    "Valuation",
-    "AI Scores",
-    "Portfolio",
-    "Compare",
-    "🔔 Alerts",
-    "🏆 Peers",
-    "🔁 Backtest",
-    "💵 Dividends",
-]
+# ----- NEW: UI CLEANUP — grouped navigation instead of one flat row of -----
+# up to 17 tabs. Tabs are organized into a small number of top-level
+# groups (Research / News / Tools / Learn / Export), each containing the
+# same individual tabs as before as a nested row. Every `with tab_X:`
+# content block later in this file is completely unchanged — only how
+# these tab objects get created changes here.
+_top_level_labels = ["📊 Research", "📰 News", "💼 Tools"]
 if education_mode:
-    _tab_labels += ["🎓 Learn", "📝 Classroom"]
-_tab_labels += ["Export"]
+    _top_level_labels.append("🎓 Learn")
+_top_level_labels.append("📤 Export")
 
-_tabs = st.tabs(_tab_labels)
+_top_tabs = st.tabs(_top_level_labels)
 
-(
-    tab_overview,
-    tab_technical,
-    tab_fundamentals,
-    tab_financials,
-    tab_analyst,
-    tab_news,
-    tab_valuation,
-    tab_scores,
-    tab_portfolio,
-    tab_compare,
-    tab_alerts,
-    tab_peers,
-    tab_backtest,
-    tab_dividends,
-) = _tabs[:14]
+with _top_tabs[0]:
+    (
+        tab_overview,
+        tab_technical,
+        tab_fundamentals,
+        tab_financials,
+        tab_analyst,
+        tab_valuation,
+        tab_scores,
+    ) = st.tabs(
+        ["Overview", "Technical", "Fundamentals", "Financials", "Analyst", "Valuation", "AI Scores"]
+    )
+
+tab_news = _top_tabs[1]
+
+with _top_tabs[2]:
+    (
+        tab_portfolio,
+        tab_compare,
+        tab_alerts,
+        tab_peers,
+        tab_backtest,
+        tab_dividends,
+    ) = st.tabs(
+        ["Portfolio", "Compare", "🔔 Alerts", "🏆 Peers", "🔁 Backtest", "💵 Dividends"]
+    )
 
 if education_mode:
-    tab_learn, tab_classroom = _tabs[14:16]
-    tab_export = _tabs[16]
+    with _top_tabs[3]:
+        tab_learn, tab_classroom = st.tabs(["🎓 Learn", "📝 Classroom"])
+    tab_export = _top_tabs[4]
 else:
     tab_learn, tab_classroom = None, None
-    tab_export = _tabs[14]
-# ----- END NEW: EDUCATION MODE / ALERTS / PEERS / BACKTEST / DIVIDENDS -----
+    tab_export = _top_tabs[3]
+# ----- END NEW: UI CLEANUP — grouped navigation -----
+
 
 # --------------------------------------------------------------------------- #
 # Overview tab
