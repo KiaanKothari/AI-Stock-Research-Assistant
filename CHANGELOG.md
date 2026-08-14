@@ -83,3 +83,14 @@ All notable changes to this project will be documented here.
 - Company news
 - Analyst information
 - AI research tools
+
+## v1.4.0-beta.1 — Post-Release Testing
+
+- Verified DCF valuation workflow with multiple stock tickers.
+- Verified Bear, Base, and Bull valuation scenarios.
+- Verified DCF sensitivity analysis.
+- Verified current price vs. intrinsic value comparison.
+- Verified the updated user interface and navigation.
+- Verified Education Mode DCF explanations.
+- Performed general UI smoke testing after deployment.
+
