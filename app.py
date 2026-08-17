@@ -1370,6 +1370,12 @@ def compute_wacc(
     debt_weight = total_debt / total_value
 
     wacc = equity_weight * cost_of_equity + debt_weight * cost_of_debt_aftertax
+    # Floor the estimate: if market cap and total debt are both missing/zero
+    # (some tickers report neither reliably), equity_weight and debt_weight
+    # both come out to 0 and wacc would compute to exactly 0.0 — not a
+    # meaningful cost of capital, and dangerous as a downstream default
+    # (it's used to seed the WACC slider elsewhere).
+    wacc = max(wacc, 0.01)
     return WACCResult(
         cost_of_equity=cost_of_equity,
         cost_of_debt_pretax=cost_of_debt_pretax,
@@ -1478,10 +1484,18 @@ def run_dcf_advanced(
 ) -> DCFScenarioResult:
     """Run one full scenario: forecast -> terminal value -> enterprise value
     -> equity value -> intrinsic value per share."""
+    # Floor WACC to a sane minimum first. Without this, a pathological
+    # input (e.g. a negative-beta stock producing a zero or negative
+    # CAPM-estimated WACC) could make wacc <= 0, and the guard below only
+    # adjusts terminal_growth relative to wacc — it never protects against
+    # wacc itself being non-positive, which would still divide by zero.
+    wacc = max(wacc, 0.01)
     if wacc <= terminal_growth:
         # A terminal value is mathematically invalid (negative or infinite)
         # if the discount rate doesn't exceed the perpetual growth rate.
-        # Guard against it instead of crashing or returning garbage.
+        # Guard against it instead of crashing or returning garbage. With
+        # wacc floored above, this always leaves wacc - terminal_growth
+        # equal to exactly 0.01, never 0.
         terminal_growth = max(0.0, wacc - 0.01)
 
     forecast = build_fcff_forecast(
@@ -3058,6 +3072,1872 @@ def fmt_currency_price(value: Any, fx_rate: float = 1.0, symbol: str = "$") -> s
     return f"{symbol}{value:,.2f}"
 
 
+
+
+# =========================================================================== #
+# SECTION 7E: PAGE RENDER FUNCTIONS  ***UI overhaul — sidebar navigation***
+# ---------------------------------------------------------------------
+# Each function below renders exactly what used to live inside a
+# `with tab_X:` block. Nothing here is new business logic — every
+# function is the same content that already existed, just wrapped so it
+# can be registered as an st.Page() and reached via the grouped sidebar
+# navigation built in SECTION 8 below (replacing the old flat/nested tab
+# bar). Functions reference module-level globals (symbol_input, info,
+# hist, live, company_name, education_mode, student_mode, display_currency,
+# _DISPLAY_FX_RATE, _DISPLAY_CURRENCY_SYMBOL) that are set in SECTION 8
+# before any page function is actually called via pg.run().
+# =========================================================================== #
+
+def render_dashboard_page() -> None:
+    """Dashboard — company snapshot, price chart, key metrics."""
+    # ----- NEW: EDUCATION MODE — student callout (Requirement 7) ----- #
+    if education_mode and student_mode:
+        st.success(
+            "🌟 Key Concept: A stock's price reflects what investors are willing to pay "
+            "today for a share of the company's future profits."
+        )
+    # ----- END NEW ----- #
+
+    with st.expander("📄 Company Profile", expanded=True):
+        summary = info.get("longBusinessSummary")
+        if summary:
+            st.write(summary)
+        else:
+            st.info("No company description available.")
+
+        cols = st.columns(4)
+        cols[0].metric("Employees", f"{info.get('fullTimeEmployees', 'N/A'):,}" if info.get("fullTimeEmployees") else "N/A")
+        cols[1].metric("Website", info.get("website", "N/A"))
+        cols[2].metric("Exchange", info.get("exchange", "N/A"))
+        cols[3].metric("Currency", info.get("currency", "N/A"))
+
+    st.markdown("#### Price Chart")
+    fig_price = candlestick_chart(
+        hist, symbol_input, show_sma20, show_sma50, show_sma200, show_bollinger
+    )
+    st.plotly_chart(
+        fig_price,
+        use_container_width=True,
+        key="price_chart",
+    )
+    fig_vol = volume_chart(hist, symbol_input)
+    st.plotly_chart(
+        fig_vol,
+        use_container_width=True,
+        key="volume_chart",
+    )
+    st.markdown("#### Key Financial Metrics")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric(label_for("Market Cap", education_mode, student_mode), fmt_large_number(info.get("marketCap")))
+    m2.metric(label_for("P/E (Trailing)", education_mode, student_mode), fmt_ratio(info.get("trailingPE")))
+    m3.metric("Forward P/E", fmt_ratio(info.get("forwardPE")))
+    if not (education_mode and student_mode):
+        m4.metric("PEG Ratio", fmt_ratio(info.get("pegRatio")))
+    m5.metric("Dividend Yield", fmt_pct(info.get("dividendYield")))
+
+    m6, m7, m8, m9, m10 = st.columns(5)
+    m6.metric(label_for("ROE", education_mode, student_mode), fmt_pct(info.get("returnOnEquity")))
+    m7.metric(label_for("ROA", education_mode, student_mode), fmt_pct(info.get("returnOnAssets")))
+    m8.metric(label_for("Revenue (TTM)", education_mode, student_mode), fmt_large_number(info.get("totalRevenue")))
+    m9.metric("Total Cash", fmt_large_number(info.get("totalCash")))
+    m10.metric("Total Debt", fmt_large_number(info.get("totalDebt")))
+
+    # ----- NEW: EDUCATION MODE — expandable metric explanations (Requirement 2) ----- #
+    if education_mode:
+        st.markdown("##### 📚 Learn About These Metrics")
+        for _metric_term in [
+            "Market Capitalization",
+            "P/E Ratio",
+            "Forward P/E",
+            "PEG Ratio",
+            "Dividend Yield",
+            "ROE",
+            "ROA",
+            "Revenue",
+        ]:
+            render_metric_education(_metric_term)
+
+
+def render_technical_page() -> None:
+    """Technical analysis: candlesticks, RSI, MACD, support/resistance, fundamentals snapshot."""
+    st.markdown("#### Candlestick Chart with Overlays")
+
+    st.plotly_chart(
+        candlestick_chart(
+            hist,
+            symbol_input,
+            show_sma20,
+            show_sma50,
+            show_sma200,
+            show_bollinger,
+        ),
+        use_container_width=True,
+        key="chart1",
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.plotly_chart(
+            rsi_chart(hist),
+            use_container_width=True,
+            key="chart2",
+        )
+
+    with col2:
+        st.plotly_chart(
+            macd_chart(hist),
+            use_container_width=True,
+            key="chart3",
+        )
+
+    st.plotly_chart(
+        support_resistance_chart(hist, symbol_input),
+        use_container_width=True,
+        key="chart4",
+    )
+
+    with st.expander("ℹ️ Support & Resistance Levels"):
+        levels = support_resistance(hist)
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.write(levels["support"])
+
+        with c2:
+            st.write(levels["resistance"])
+    st.markdown("#### Valuation & Profitability")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric(label_for("Market Cap", education_mode, student_mode), fmt_large_number(info.get("marketCap")))
+    col2.metric("Trailing P/E", fmt_ratio(info.get("trailingPE")))
+    col3.metric("Forward P/E", fmt_ratio(info.get("forwardPE")))
+    col4.metric("PEG Ratio", fmt_ratio(info.get("pegRatio")))
+
+    # ----- NEW: EDUCATION MODE — Student Mode hides advanced metrics (Requirement 7) ----- #
+    if not (education_mode and student_mode):
+        col5, col6, col7, col8 = st.columns(4)
+        col5.metric("Price / Book", fmt_ratio(info.get("priceToBook")))
+        col6.metric("Price / Sales", fmt_ratio(info.get("priceToSalesTrailing12Months")))
+        col7.metric("EV / EBITDA", fmt_ratio(info.get("enterpriseToEbitda")))
+        col8.metric("Beta", fmt_ratio(info.get("beta")))
+    # ----- END NEW: EDUCATION MODE ----- #
+
+    st.markdown("#### Profitability & Returns")
+    col9, col10, col11, col12 = st.columns(4)
+    col9.metric(label_for("ROE", education_mode, student_mode), fmt_pct(info.get("returnOnEquity")))
+    col10.metric(label_for("ROA", education_mode, student_mode), fmt_pct(info.get("returnOnAssets")))
+    col11.metric("Profit Margin", fmt_pct(info.get("profitMargins")))
+    col12.metric("Operating Margin", fmt_pct(info.get("operatingMargins")))
+
+    st.markdown("#### Balance Sheet Snapshot")
+    col13, col14, col15, col16 = st.columns(4)
+    col13.metric("Total Cash", fmt_large_number(info.get("totalCash")))
+    col14.metric("Total Debt", fmt_large_number(info.get("totalDebt")))
+    # ----- NEW: EDUCATION MODE — Student Mode hides advanced metrics (Requirement 7) ----- #
+    if not (education_mode and student_mode):
+        col15.metric("Debt / Equity", fmt_ratio(info.get("debtToEquity")))
+        col16.metric("Current Ratio", fmt_ratio(info.get("currentRatio")))
+    # ----- END NEW: EDUCATION MODE ----- #
+
+    # ----- NEW: EDUCATION MODE — expandable metric explanations (Requirement 2) ----- #
+    if education_mode:
+        st.markdown("##### 📚 Learn About These Metrics")
+        for _metric_term in [
+            "Beta",
+            "Gross Margin",
+            "Operating Margin",
+            "Net Margin",
+            "Debt to Equity",
+            "Current Ratio",
+            "Enterprise Value",
+            "EBITDA",
+        ]:
+            render_metric_education(_metric_term)
+    # ----- END NEW: EDUCATION MODE ----- #
+
+    st.markdown("#### Revenue & Earnings Trend")
+    income_stmt = get_income_statement(symbol_input)
+    earnings_df = get_earnings(symbol_input)
+
+    col_rev, col_earn = st.columns(2)
+    with col_rev:
+        st.plotly_chart(
+            revenue_chart(income_stmt),
+            use_container_width=True,
+            key="chart5",
+        )
+    with col_earn:
+        st.plotly_chart(
+            earnings_chart(earnings_df),
+            use_container_width=True,
+            key="chart6",
+        )
+
+
+def render_financials_page() -> None:
+    """Income statement, balance sheet, and cash flow statement."""
+    quarterly = st.toggle("Show Quarterly Data", value=False)
+
+    with st.expander("💵 Income Statement", expanded=True):
+        income = get_income_statement(symbol_input, quarterly=quarterly)
+        if income.empty:
+            st.info("Income statement data not available.")
+        else:
+            st.dataframe(income, use_container_width=True)
+
+    with st.expander("🏦 Balance Sheet"):
+        balance = get_balance_sheet(symbol_input, quarterly=quarterly)
+        if balance.empty:
+            st.info("Balance sheet data not available.")
+        else:
+            st.dataframe(balance, use_container_width=True)
+
+    with st.expander("💸 Cash Flow Statement"):
+        cashflow = get_cash_flow(symbol_input, quarterly=quarterly)
+        if cashflow.empty:
+            st.info("Cash flow data not available.")
+        else:
+            st.dataframe(cashflow, use_container_width=True)
+
+
+def render_analyst_page() -> None:
+    """Analyst recommendations and price targets."""
+    st.markdown("#### Analyst Recommendations")
+    recs = get_recommendations(symbol_input)
+    if recs.empty:
+        st.info("No analyst recommendation data available.")
+    else:
+        st.dataframe(recs, use_container_width=True)
+
+    st.markdown("#### Price Targets")
+    targets = get_price_targets(symbol_input)
+    if not targets:
+        st.info("No analyst price target data available.")
+    else:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Low", fmt_large_number(targets.get("low")) if targets.get("low") else "N/A")
+        col2.metric("Mean", fmt_large_number(targets.get("mean")) if targets.get("mean") else "N/A")
+        col3.metric("Median", fmt_large_number(targets.get("median")) if targets.get("median") else "N/A")
+        col4.metric("High", fmt_large_number(targets.get("high")) if targets.get("high") else "N/A")
+
+        current_price = live.get("price")
+        mean_target = targets.get("mean")
+        if current_price and mean_target:
+            upside = (mean_target - current_price) / current_price * 100
+            st.metric("Implied Upside vs. Mean Target", f"{upside:+.2f}%")
+
+
+def render_scores_page() -> None:
+    """AI / Buffett / Graham / Risk composite scores with breakdowns."""
+    st.markdown("#### AI-Generated Investment Scores")
+    st.caption("Transparent, rule-based scoring — not machine-learning black boxes.")
+
+    ai_result = ai_investment_score(info, hist)
+    buffett_result = buffett_score(info)
+    graham_result = graham_score(info)
+    risk_result = risk_score(info, hist)
+
+    gauge_col1, gauge_col2, gauge_col3, gauge_col4 = st.columns(4)
+    with gauge_col1:
+        st.plotly_chart(
+            gauge_chart(ai_result.score, "AI Score"),
+            use_container_width=True,
+            key="chart7",
+        )
+    with gauge_col2:
+        st.plotly_chart(
+            gauge_chart(buffett_result.score, "Buffett Score"),
+            use_container_width=True,
+            key="chart8",
+        )
+    with gauge_col3:
+        st.plotly_chart(
+            gauge_chart(graham_result.score, "Graham Score"),
+            use_container_width=True,
+            key="chart9",
+        )
+    with gauge_col4:
+        st.plotly_chart(
+            gauge_chart(risk_result.score, "Risk Score"),
+            use_container_width=True,
+            key="chart10",
+        )
+    score_col1, score_col2 = st.columns(2)
+    with score_col1:
+        with st.expander(f"AI Investment Score Breakdown — {ai_result.label}", expanded=True):
+            for line in ai_result.breakdown:
+                st.write(f"• {line}")
+        with st.expander(f"Buffett Score Breakdown — {buffett_result.label}"):
+            for line in buffett_result.breakdown:
+                st.write(f"• {line}")
+    with score_col2:
+        with st.expander(f"Graham Score Breakdown — {graham_result.label}"):
+            for line in graham_result.breakdown:
+                st.write(f"• {line}")
+        with st.expander(f"Risk Score Breakdown — {risk_result.label}"):
+            for line in risk_result.breakdown:
+                st.write(f"• {line}")
+
+
+def render_earnings_page() -> None:
+    """Earnings — revenue trend, EPS estimate vs. reported, and upcoming/past earnings dates."""
+    st.markdown(f"#### Earnings — {symbol_input}")
+
+    eps_col1, eps_col2, eps_col3 = st.columns(3)
+    eps_col1.metric("Trailing EPS", fmt_ratio(info.get("trailingEps")))
+    eps_col2.metric("Forward EPS", fmt_ratio(info.get("forwardEps")))
+    eps_col3.metric("Earnings Growth", fmt_pct(info.get("earningsGrowth")))
+
+    income_stmt_earn = get_income_statement(symbol_input)
+    earnings_df_earn = get_earnings(symbol_input)
+
+    earn_col1, earn_col2 = st.columns(2)
+    with earn_col1:
+        st.plotly_chart(
+            revenue_chart(income_stmt_earn),
+            use_container_width=True,
+            key="earnings_page_revenue_chart",
+        )
+    with earn_col2:
+        st.plotly_chart(
+            earnings_chart(earnings_df_earn),
+            use_container_width=True,
+            key="earnings_page_eps_chart",
+        )
+
+    with st.expander("📅 Earnings Dates (Estimate vs. Reported)", expanded=True):
+        if earnings_df_earn.empty:
+            st.info("No earnings date data available for this ticker.")
+        else:
+            st.dataframe(earnings_df_earn, use_container_width=True)
+
+
+def render_stock_research_page() -> None:
+    """Stock Research — Technical, Fundamentals, Financials, Analyst, and AI Scores
+    grouped under one page as inner tabs, so the sidebar nav doesn't need a
+    separate top-level entry for each."""
+    st.markdown(f"#### Stock Research — {symbol_input}")
+    research_inner_tabs = st.tabs(["Technical", "Fundamentals", "Financials", "Analyst", "AI Scores"])
+    with research_inner_tabs[0]:
+        render_technical_page()
+    with research_inner_tabs[1]:
+        st.info(
+            "Fundamentals are integrated into the Technical and Financials tabs above — "
+            "see Technical for valuation/profitability metrics and Financials for the "
+            "full statements."
+        )
+    with research_inner_tabs[2]:
+        render_financials_page()
+    with research_inner_tabs[3]:
+        render_analyst_page()
+    with research_inner_tabs[4]:
+        render_scores_page()
+
+
+def _dcf_kpi_card(icon, icon_bg, label, value, value_color, subtext, subtext_color, card_bg, card_border, muted):
+    """Small HTML KPI card used in the DCF Valuation page header row."""
+    return f"""
+    <div style="background:{card_bg}; border:1px solid {card_border}; border-radius:12px;
+                padding:16px 18px; height:132px; display:flex; flex-direction:column; justify-content:space-between;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+            <span style="color:{muted}; font-size:0.76rem; font-weight:600;">{label}</span>
+            <span style="background:{icon_bg}; min-width:28px; height:28px; border-radius:50%;
+                         display:flex; align-items:center; justify-content:center; font-size:0.85rem;">{icon}</span>
+        </div>
+        <div>
+            <div style="font-family:'JetBrains Mono',monospace; font-size:1.5rem; font-weight:700; color:{value_color};">{value}</div>
+            <div style="color:{subtext_color}; font-size:0.78rem; margin-top:2px;">{subtext}</div>
+        </div>
+    </div>
+    """
+
+
+def _dcf_scenario_card(emoji, label, label_color, header_bg, tg_pct, wacc_pct, value, upside_text, upside_color, card_bg, card_border, muted):
+    """Bear / Base / Bull scenario card used in the DCF Valuation page."""
+    return f"""
+    <div style="background:{card_bg}; border:1px solid {card_border}; border-radius:12px;
+                padding:18px; text-align:center;">
+        <div style="width:44px; height:44px; border-radius:50%; background:{header_bg};
+                    display:flex; align-items:center; justify-content:center; font-size:1.3rem; margin:0 auto 10px auto;">{emoji}</div>
+        <div style="color:{label_color}; font-weight:700; font-size:0.98rem;">{label}</div>
+        <div style="color:{muted}; font-size:0.76rem; margin-top:8px;">Terminal Growth: {tg_pct}</div>
+        <div style="color:{muted}; font-size:0.76rem;">WACC: {wacc_pct}</div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:1.6rem; font-weight:800; color:{label_color}; margin-top:10px;">{value}</div>
+        <div style="color:{upside_color}; font-size:0.8rem; font-weight:600; margin-top:4px;">{upside_text}</div>
+    </div>
+    """
+
+
+def _dcf_sensitivity_cell_color(value, lo, hi):
+    """Interpolate a red -> yellow -> green background color for a sensitivity table cell."""
+    if value is None or hi == lo:
+        return "rgba(127,127,127,0.15)"
+    t = max(0.0, min(1.0, (value - lo) / (hi - lo)))
+    if t < 0.5:
+        # red -> yellow
+        u = t / 0.5
+        r, g, b = 214, int(70 + u * (196 - 70)), int(66 + u * (77 - 66))
+    else:
+        # yellow -> green
+        u = (t - 0.5) / 0.5
+        r, g, b = int(214 - u * (214 - 26)), int(196 - u * (196 - 166)), int(77 - u * (77 - 69))
+    return f"rgba({r},{g},{b},0.55)"
+
+
+def _dcf_price_range_bar(bear_val, current_val, base_val, bull_val, muted):
+    """Gradient horizontal bar showing Bear / Current / Base / Bull positioned by value."""
+    values = [v for v in (bear_val, current_val, base_val, bull_val) if v is not None]
+    if not values:
+        return ""
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+
+    def pos(v):
+        return max(3, min(97, (v - lo) / span * 100))
+
+    markers = [
+        (bear_val, "Bear Case", "#FF5A4E"),
+        (current_val, "Current Price", "#E8EAED"),
+        (base_val, "Intrinsic Value (Base)", "#5B9BD9"),
+        (bull_val, "Bull Case", "#3DDC63"),
+    ]
+    labels_html = ""
+    ticks_html = ""
+    for val, label, color in markers:
+        if val is None:
+            continue
+        p = pos(val)
+        labels_html += (
+            f'<div style="position:absolute; left:{p}%; transform:translateX(-50%); text-align:center; top:-48px; white-space:nowrap;">'
+            f'<div style="font-family:\'JetBrains Mono\',monospace; font-weight:700; color:{color}; font-size:0.85rem;">${val:,.2f}</div>'
+            f'<div style="color:{muted}; font-size:0.68rem;">{label}</div>'
+            f"</div>"
+        )
+        ticks_html += (
+            f'<div style="position:absolute; left:{p}%; top:0; width:2px; height:100%; '
+            f'background:rgba(255,255,255,0.7); transform:translateX(-1px);"></div>'
+        )
+
+    return f"""
+    <div style="position:relative; margin-top:56px; margin-bottom:10px; height:10px; border-radius:6px;
+                background:linear-gradient(to right, #FF5A4E, #A25FE8, #5B9BD9, #3DDC63);">
+        {ticks_html}
+        {labels_html}
+    </div>
+    """
+
+
+def render_dcf_valuation_page() -> None:
+    """
+    DCF Valuation — redesigned to match the v2 dashboard mockup: a KPI card
+    row, a 5-year forecast table, a valuation-summary donut chart,
+    Bear/Base/Bull scenario cards, a color-coded WACC x Terminal-Growth
+    sensitivity table, and a price-range gradient bar.
+
+    All underlying numbers still come from the exact same functions as
+    before (get_historical_financials, derive_base_assumptions,
+    compute_wacc, run_bear_base_bull, sensitivity_table,
+    check_dcf_suitability, generate_dcf_narrative — see SECTION 5B above).
+    Only the presentation layer changed here.
+    """
+    _dcf_theme = st.session_state.get("theme_mode_toggle", "Dark")
+    if _dcf_theme == "Light":
+        card_bg, card_border, muted = "#F7F8FA", "rgba(0,0,0,0.10)", "#5B6472"
+    else:
+        card_bg, card_border, muted = "#161B22", "rgba(255,255,255,0.10)", "#9AA4B2"
+
+    header_col1, header_col2 = st.columns([4, 1])
+    with header_col1:
+        st.markdown(
+            f"""
+            <div style="display:flex; align-items:baseline; gap:10px;">
+                <span style="font-size:1.5rem; font-weight:800;">DCF Valuation</span>
+                <span style="background:rgba(0,200,5,0.15); color:#00C805; padding:2px 10px;
+                             border-radius:999px; font-size:0.68rem; font-weight:700;">BETA</span>
+            </div>
+            <p style="color:{muted}; margin-top:2px; margin-bottom:0;">
+                Intrinsic value estimation using Discounted Cash Flow analysis
+            </p>
+            """,
+            unsafe_allow_html=True,
+        )
+    with header_col2:
+        st.caption(f"🕐 Updated {dt.datetime.now().strftime('%b %d, %Y %I:%M %p')}")
+        if st.button("🔄 Run DCF Analysis", use_container_width=True, key="dcf2_run_button"):
+            st.rerun()
+
+    st.divider()
+
+    with st.expander("📐 Graham Intrinsic Value (classic formula, separate from the DCF below)"):
+        eps = info.get("trailingEps")
+        book_value = info.get("bookValue")
+        g_number = graham_number(eps, book_value)
+        gcol1, gcol2, gcol3 = st.columns(3)
+        gcol1.metric("Trailing EPS", f"{eps:.2f}" if eps else "N/A")
+        gcol2.metric("Book Value / Share", f"{book_value:.2f}" if book_value else "N/A")
+        gcol3.metric("Graham Number", f"${g_number:.2f}" if g_number else "N/A")
+        if g_number and live.get("price"):
+            g_mos = margin_of_safety(g_number, live["price"])
+            if g_mos is not None:
+                st.metric("Margin of Safety vs. Current Price", f"{g_mos:+.2f}%")
+
+    hist_financials = get_historical_financials(symbol_input)
+
+    if hist_financials is None:
+        st.warning(
+            f"Historical financial statement data isn't available for "
+            f"{symbol_input}, so a forecast-driven DCF can't be built for "
+            f"this ticker. Try a different company."
+        )
+        return
+
+    if hist_financials.data_warnings:
+        with st.expander("⚠️ Data Notes", expanded=False):
+            for note in hist_financials.data_warnings:
+                st.caption(f"• {note}")
+
+    derived = derive_base_assumptions(hist_financials)
+    default_growth = derived["revenue_growth"] if derived["revenue_growth"] is not None else 0.08
+    default_margin = derived["ebit_margin"] if derived["ebit_margin"] is not None else 0.15
+    default_da_pct = derived["da_pct_revenue"] if derived["da_pct_revenue"] is not None else 0.04
+    default_capex_pct = derived["capex_pct_revenue"] if derived["capex_pct_revenue"] is not None else 0.05
+    default_nwc_pct = derived["nwc_pct_revenue"] if derived["nwc_pct_revenue"] is not None else 0.01
+    default_tax_rate = hist_financials.effective_tax_rate or 0.21
+
+    beta_val = info.get("beta") or 1.0
+    market_cap_val = info.get("marketCap") or 0.0
+    total_debt_val = info.get("totalDebt") or 0.0
+    risk_free_rate = 0.04
+    equity_risk_premium = 0.05
+    credit_spread = 0.015
+
+    wacc_estimate = compute_wacc(
+        risk_free_rate=risk_free_rate,
+        equity_risk_premium=equity_risk_premium,
+        beta=beta_val,
+        credit_spread=credit_spread,
+        tax_rate=default_tax_rate,
+        market_cap=market_cap_val,
+        total_debt=total_debt_val,
+    )
+
+    with st.expander("⚙️ Base-Case Assumptions", expanded=False):
+        st.caption(
+            "Defaults are derived from up to 3 years of financial history "
+            "and an estimated WACC — adjust anything below."
+        )
+        a_col1, a_col2, a_col3 = st.columns(3)
+        with a_col1:
+            rev_growth_input = st.slider(
+                "Revenue Growth", -10.0, 40.0,
+                min(40.0, max(-10.0, round(default_growth * 100, 1))), 0.5, key="dcf2_rev_growth"
+            ) / 100
+            ebit_margin_input = st.slider(
+                "EBIT Margin", -50.0, 60.0,
+                min(60.0, max(-50.0, round(default_margin * 100, 1))), 0.5, key="dcf2_ebit_margin"
+            ) / 100
+        with a_col2:
+            tax_rate_input = st.slider(
+                "Tax Rate", 0.0, 40.0,
+                min(40.0, max(0.0, round(default_tax_rate * 100, 1))), 0.5, key="dcf2_tax_rate"
+            ) / 100
+            wacc_input = st.slider(
+                "WACC", 3.0, 20.0, min(20.0, max(3.0, round(wacc_estimate.wacc * 100, 1))), 0.1, key="dcf2_wacc"
+            ) / 100
+        with a_col3:
+            terminal_growth_input = st.slider(
+                "Terminal Growth", 0.0, 5.0, 2.5, 0.1, key="dcf2_terminal_growth"
+            ) / 100
+            projection_years_input = st.slider("Forecast Years", 3, 10, 5, 1, key="dcf2_years")
+
+        st.markdown(
+            f"**How the suggested WACC was built:** Cost of Equity (CAPM) = "
+            f"{risk_free_rate:.1%} + {beta_val:.2f}β × {equity_risk_premium:.1%} = "
+            f"{wacc_estimate.cost_of_equity:.2%}; after-tax Cost of Debt = "
+            f"{wacc_estimate.cost_of_debt_aftertax:.2%}; weighted "
+            f"{wacc_estimate.equity_weight:.0%} equity / {wacc_estimate.debt_weight:.0%} debt "
+            f"→ **{wacc_estimate.wacc:.2%}** suggested."
+        )
+
+    base_revenue = hist_financials.revenue[0]
+    net_debt_val = total_debt_val - (info.get("totalCash") or 0.0)
+    shares_out_val = info.get("sharesOutstanding")
+
+    base_assumptions_dict = {
+        "revenue_growth": rev_growth_input,
+        "ebit_margin": ebit_margin_input,
+        "tax_rate": tax_rate_input,
+        "da_pct_revenue": default_da_pct,
+        "capex_pct_revenue": default_capex_pct,
+        "nwc_pct_revenue": default_nwc_pct,
+        "wacc": wacc_input,
+        "terminal_growth": terminal_growth_input,
+    }
+
+    scenarios = run_bear_base_bull(
+        base_revenue=base_revenue,
+        base_assumptions=base_assumptions_dict,
+        net_debt=net_debt_val,
+        shares_outstanding=shares_out_val,
+        projection_years=projection_years_input,
+    )
+    base_result = scenarios["Base"]
+    bear_result = scenarios["Bear"]
+    bull_result = scenarios["Bull"]
+    current_price = live.get("price")
+
+    suitability_warnings = check_dcf_suitability(
+        sector=info.get("sector"),
+        industry=info.get("industry"),
+        base_fcff=base_result.forecast[0].fcff if base_result.forecast else None,
+        hist=hist_financials,
+        revenue_growth_assumption=rev_growth_input,
+    )
+    if suitability_warnings:
+        with st.expander("⚠️ Is a basic DCF appropriate for this company?", expanded=True):
+            for warning_text in suitability_warnings:
+                st.warning(warning_text)
+
+    # ----------------------------------------------------------------- #
+    # KPI card row
+    # ----------------------------------------------------------------- #
+    base_iv = base_result.intrinsic_value_per_share
+    bear_iv = bear_result.intrinsic_value_per_share
+    bull_iv = bull_result.intrinsic_value_per_share
+    base_upside = margin_of_safety(base_iv, current_price) if base_iv and current_price else None
+
+    kcol1, kcol2, kcol3, kcol4 = st.columns(4)
+    with kcol1:
+        st.markdown(
+            _dcf_kpi_card(
+                "💲", "rgba(0,200,5,0.15)", "Intrinsic Value (Base)",
+                f"${base_iv:,.2f}" if base_iv else "N/A", "#3DDC63",
+                f"{base_upside:+.2f}% Upside" if base_upside is not None else "vs. current price unavailable",
+                "#3DDC63" if (base_upside or 0) >= 0 else "#FF5A4E",
+                card_bg, card_border, muted,
+            ),
+            unsafe_allow_html=True,
+        )
+    with kcol2:
+        st.markdown(
+            _dcf_kpi_card(
+                "🎯", "rgba(162,95,232,0.18)", "Fair Value Range",
+                f"${bear_iv:,.2f} – ${bull_iv:,.2f}" if bear_iv and bull_iv else "N/A", "#E6E8EB",
+                f"Bear ${bear_iv:,.0f}  ·  Bull ${bull_iv:,.0f}" if bear_iv and bull_iv else "",
+                muted, card_bg, card_border, muted,
+            ),
+            unsafe_allow_html=True,
+        )
+    with kcol3:
+        st.markdown(
+            _dcf_kpi_card(
+                "📈", "rgba(91,155,217,0.18)", "WACC",
+                f"{wacc_input:.2%}", "#5B9BD9", "Cost of Capital",
+                muted, card_bg, card_border, muted,
+            ),
+            unsafe_allow_html=True,
+        )
+    with kcol4:
+        st.markdown(
+            _dcf_kpi_card(
+                "📊", "rgba(162,95,232,0.18)", "Terminal Growth",
+                f"{terminal_growth_input:.2%}", "#A25FE8", "Perpetual Growth Rate",
+                muted, card_bg, card_border, muted,
+            ),
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
+
+    # ----------------------------------------------------------------- #
+    # 5-Year Cash Flow Projections + DCF Valuation Summary (donut)
+    # ----------------------------------------------------------------- #
+    proj_col, summary_col = st.columns([3, 2])
+
+    with proj_col:
+        st.markdown(
+            f'<div style="background:{card_bg}; border:1px solid {card_border}; border-radius:12px; padding:18px;">'
+            f'<div style="font-weight:700; margin-bottom:10px;">5-Year Cash Flow Projections</div>',
+            unsafe_allow_html=True,
+        )
+        forecast_df = pd.DataFrame(
+            [
+                {
+                    "Year": f.year_label,
+                    "Revenue": f.revenue,
+                    "% Growth": (f.revenue / base_result.forecast[i - 1].revenue - 1) if i > 0 else (f.revenue / base_revenue - 1),
+                    "FCFF": f.fcff,
+                    "FCFF Margin": f.fcff / f.revenue if f.revenue else None,
+                }
+                for i, f in enumerate(base_result.forecast)
+            ]
+        )
+        st.dataframe(
+            forecast_df.style.format(
+                {"Revenue": "${:,.0f}", "% Growth": "{:+.2%}", "FCFF": "${:,.0f}", "FCFF Margin": "{:.1%}"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("All figures in the security's native reporting currency.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with summary_col:
+        st.markdown(
+            f'<div style="background:{card_bg}; border:1px solid {card_border}; border-radius:12px; padding:18px;">'
+            f'<div style="font-weight:700; margin-bottom:6px;">DCF Valuation Summary</div>',
+            unsafe_allow_html=True,
+        )
+        sum_pv_fcf = sum(f.pv_fcff for f in base_result.forecast)
+        sum_pv_terminal = base_result.pv_terminal_value
+        ev_total = sum_pv_fcf + sum_pv_terminal
+        fig_donut = go.Figure(
+            data=[
+                go.Pie(
+                    labels=["PV of FCF (Years 1-N)", "PV of Terminal Value"],
+                    values=[max(sum_pv_fcf, 0), max(sum_pv_terminal, 0)],
+                    hole=0.62,
+                    marker=dict(colors=["#5B9BD9", "#A25FE8"]),
+                    textinfo="none",
+                )
+            ]
+        )
+        fig_donut = _base_layout(fig_donut, height=230)
+        fig_donut.update_layout(margin=dict(l=10, r=10, t=10, b=10), showlegend=False)
+        st.plotly_chart(fig_donut, use_container_width=True, key="dcf_summary_donut")
+
+        pv_fcf_pct = (sum_pv_fcf / ev_total * 100) if ev_total else 0
+        pv_term_pct = (sum_pv_terminal / ev_total * 100) if ev_total else 0
+        st.markdown(
+            f"""
+            <div style="font-size:0.82rem;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                    <span>🔵 PV of FCF (Years 1-{projection_years_input})</span>
+                    <span style="font-family:'JetBrains Mono',monospace;">{fmt_large_number(sum_pv_fcf)} · {pv_fcf_pct:.1f}%</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                    <span>🟣 PV of Terminal Value</span>
+                    <span style="font-family:'JetBrains Mono',monospace;">{fmt_large_number(sum_pv_terminal)} · {pv_term_pct:.1f}%</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; border-top:1px solid {card_border}; padding-top:6px; margin-top:6px;">
+                    <span>Enterprise Value</span>
+                    <span style="font-family:'JetBrains Mono',monospace;">{fmt_large_number(ev_total)}</span>
+                </div>
+            </div>
+            <div style="margin-top:12px; border:1px solid {card_border}; border-radius:10px; padding:10px 14px;">
+                <div style="color:{muted}; font-size:0.76rem;">Equity Value</div>
+                <div style="font-family:'JetBrains Mono',monospace; font-size:1.4rem; font-weight:800; color:#3DDC63;">{fmt_large_number(base_result.equity_value)}</div>
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
+
+    # ----------------------------------------------------------------- #
+    # Scenario Analysis + Sensitivity Analysis
+    # ----------------------------------------------------------------- #
+    scen_col, sens_col = st.columns([2, 3])
+
+    with scen_col:
+        st.markdown("**Scenario Analysis**")
+        sc1, sc2, sc3 = st.columns(3)
+        bear_upside = margin_of_safety(bear_iv, current_price) if bear_iv and current_price else None
+        bull_upside = margin_of_safety(bull_iv, current_price) if bull_iv and current_price else None
+        with sc1:
+            st.markdown(
+                _dcf_scenario_card(
+                    "🐻", "Bear Case", "#FF5A4E", "rgba(255,90,78,0.18)",
+                    f"{bear_result.assumptions['terminal_growth']:.1%}", f"{bear_result.assumptions['wacc']:.1%}",
+                    f"${bear_iv:,.2f}" if bear_iv else "N/A",
+                    f"{bear_upside:+.1f}% vs. price" if bear_upside is not None else "",
+                    "#FF5A4E", card_bg, card_border, muted,
+                ),
+                unsafe_allow_html=True,
+            )
+        with sc2:
+            st.markdown(
+                _dcf_scenario_card(
+                    "⚖️", "Base Case", "#5B9BD9", "rgba(91,155,217,0.18)",
+                    f"{base_result.assumptions['terminal_growth']:.1%}", f"{base_result.assumptions['wacc']:.1%}",
+                    f"${base_iv:,.2f}" if base_iv else "N/A",
+                    f"{base_upside:+.1f}% vs. price" if base_upside is not None else "",
+                    "#5B9BD9", card_bg, card_border, muted,
+                ),
+                unsafe_allow_html=True,
+            )
+        with sc3:
+            st.markdown(
+                _dcf_scenario_card(
+                    "🐐", "Bull Case", "#3DDC63", "rgba(61,220,99,0.18)",
+                    f"{bull_result.assumptions['terminal_growth']:.1%}", f"{bull_result.assumptions['wacc']:.1%}",
+                    f"${bull_iv:,.2f}" if bull_iv else "N/A",
+                    f"{bull_upside:+.1f}% vs. price" if bull_upside is not None else "",
+                    "#3DDC63", card_bg, card_border, muted,
+                ),
+                unsafe_allow_html=True,
+            )
+        if current_price:
+            st.markdown(
+                f'<p style="text-align:center; color:{muted}; font-size:0.78rem; margin-top:8px;">vs. Current Price: ${current_price:,.2f}</p>',
+                unsafe_allow_html=True,
+            )
+
+    with sens_col:
+        st.markdown("**Sensitivity Analysis** — Implied Equity Value per Share")
+        wacc_range = [wacc_input + d for d in (-0.02, -0.01, 0.0, 0.01, 0.02)]
+        tg_range = [terminal_growth_input + d for d in (-0.01, -0.005, 0.0, 0.005, 0.01)]
+        sensitivity_grid = sensitivity_table(
+            base_revenue=base_revenue,
+            base_assumptions=base_assumptions_dict,
+            net_debt=net_debt_val,
+            shares_outstanding=shares_out_val,
+            projection_years=projection_years_input,
+            wacc_range=wacc_range,
+            terminal_growth_range=tg_range,
+        )
+        flat_values = [v for row in sensitivity_grid for v in row if v is not None]
+        lo_val, hi_val = (min(flat_values), max(flat_values)) if flat_values else (0, 1)
+
+        header_cells = "".join(
+            f'<th style="padding:6px 8px; font-size:0.75rem; color:{muted}; font-weight:600;">{t:.1%}</th>'
+            for t in tg_range
+        )
+        base_tg_col_idx = min(range(len(tg_range)), key=lambda i: abs(tg_range[i] - terminal_growth_input))
+        rows_html = ""
+        for w, row in zip(wacc_range, sensitivity_grid):
+            is_base_row = abs(w - wacc_input) < 1e-9
+            cells = ""
+            for col_idx, v in enumerate(row):
+                bg = _dcf_sensitivity_cell_color(v, lo_val, hi_val)
+                is_base_cell = is_base_row and col_idx == base_tg_col_idx
+                border = f"2px solid {muted}" if is_base_cell else "1px solid transparent"
+                cells += (
+                    f'<td style="background:{bg}; text-align:center; padding:7px 8px; '
+                    f'font-family:\'JetBrains Mono\',monospace; font-size:0.78rem; border-radius:4px; '
+                    f'border:{border};">'
+                    f'{f"${v:,.0f}" if v is not None else "N/A"}</td>'
+                )
+            rows_html += (
+                f'<tr><td style="color:{muted}; font-size:0.75rem; padding:6px 8px; font-weight:600;">{w:.2%}</td>{cells}</tr>'
+            )
+
+        st.markdown(
+            f"""
+            <div style="background:{card_bg}; border:1px solid {card_border}; border-radius:12px; padding:16px; overflow-x:auto;">
+                <table style="border-collapse:separate; border-spacing:3px; width:100%;">
+                    <tr><th style="color:{muted}; font-size:0.72rem;">WACC ↓ / TG →</th>{header_cells}</tr>
+                    {rows_html}
+                </table>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption(f"Base Case: WACC {wacc_input:.2%} | Terminal Growth {terminal_growth_input:.2%}")
+
+    st.write("")
+
+    # ----------------------------------------------------------------- #
+    # Current Price vs. Intrinsic Value gradient bar
+    # ----------------------------------------------------------------- #
+    st.markdown(
+        f'<div style="background:{card_bg}; border:1px solid {card_border}; border-radius:12px; padding:22px 24px 18px 24px;">'
+        f'<div style="font-weight:700; margin-bottom:4px;">Current Price vs. Intrinsic Value</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(_dcf_price_range_bar(bear_iv, current_price, base_iv, bull_iv, muted), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.write("")
+
+    # Deterministic Python computed every number above; this narrative only
+    # DESCRIBES those already-computed results in plain English — it does
+    # not perform any valuation math of its own.
+    narrative = generate_dcf_narrative(company_name, symbol_input, scenarios, current_price)
+    st.info(f"🤖 {narrative}")
+
+    if education_mode:
+        with st.expander("📚 See the actual FCFF calculation for this company"):
+            f1 = base_result.forecast[0]
+            st.markdown(
+                f"**FCFF (Year 1) = EBIT × (1 − Tax Rate) + D&A − CapEx − ΔNWC**\n\n"
+                f"= {fmt_large_number(f1.ebit)} × (1 − {tax_rate_input:.1%}) "
+                f"+ {fmt_large_number(f1.da)} − {fmt_large_number(f1.capex)} "
+                f"− {fmt_large_number(f1.change_in_nwc)}\n\n"
+                f"= {fmt_large_number(f1.nopat)} (NOPAT) + {fmt_large_number(f1.da)} "
+                f"− {fmt_large_number(f1.capex)} − {fmt_large_number(f1.change_in_nwc)}\n\n"
+                f"= **{fmt_large_number(f1.fcff)}**"
+            )
+        st.markdown("##### 📖 DCF Concepts Explained")
+        for _dcf_term in ["WACC", "NOPAT", "EBIT", "Terminal Value", "Net Working Capital (NWC)", "FCFF"]:
+            render_metric_education(_dcf_term)
+
+    st.info(
+        "⚠️ DCF valuation is highly sensitive to its assumptions and should "
+        "NOT be treated as a guaranteed prediction of future stock price. "
+        "Small changes in growth, margin, WACC, or terminal growth can "
+        "produce very different results — that's inherent to the model, "
+        "not a flaw in the calculation. A basic DCF like this one is also "
+        "generally less reliable for banks, insurers, companies with "
+        "negative free cash flow, very young companies, highly cyclical "
+        "businesses, and extremely high-growth companies (see the warnings "
+        "above if any applied to this ticker)."
+    )
+
+
+def render_peers_page() -> None:
+    """Peer / sector benchmarking against curated or user-supplied comparables."""
+    st.markdown(f"#### 🏆 Peer & Sector Comparison — {symbol_input}")
+
+    curated_peers = get_peer_symbols(symbol_input)
+    default_peer_text = ", ".join(curated_peers)
+    if not curated_peers:
+        st.info(
+            f"No curated peer list is available for {symbol_input} yet. "
+            f"Enter peer tickers manually below (sector: {info.get('sector', 'N/A')})."
+        )
+
+    peer_text = st.text_input(
+        "Peer tickers (comma-separated)",
+        value=default_peer_text,
+        key="peer_symbols_input",
+    )
+    peer_symbols = [p.strip().upper() for p in peer_text.split(",") if p.strip()][:6]
+
+    if not peer_symbols:
+        st.warning("Add at least one peer ticker to run a comparison.")
+    else:
+        peer_df = build_peer_comparison_table(symbol_input, peer_symbols)
+
+        st.markdown("##### Benchmarking Table")
+        st.dataframe(
+            peer_df.style.format(
+                {
+                    "Market Cap": lambda x: fmt_large_number(x),
+                    "Revenue Growth": lambda x: fmt_pct(x),
+                    "Profit Margin": lambda x: fmt_pct(x),
+                    "P/E Ratio": lambda x: fmt_ratio(x),
+                    "ROE": lambda x: fmt_pct(x),
+                },
+                na_rep="N/A",
+            ),
+            use_container_width=True,
+        )
+
+        st.markdown("##### Compare a Metric")
+        peer_metric = st.selectbox(
+            "Metric",
+            options=["Market Cap", "Revenue Growth", "Profit Margin", "P/E Ratio", "ROE"],
+            key="peer_metric_select",
+        )
+        st.plotly_chart(
+            peer_comparison_chart(peer_df, peer_metric, symbol_input),
+            use_container_width=True,
+            key="peer_chart",
+        )
+
+        main_row = peer_df[peer_df["Symbol"] == symbol_input].iloc[0]
+        peer_rows = peer_df[peer_df["Symbol"] != symbol_input]
+
+        st.markdown(f"##### {symbol_input} vs. Peer Average")
+        bench_col1, bench_col2, bench_col3, bench_col4 = st.columns(4)
+        for _bench_col, _bench_metric, _bench_fmt in zip(
+            [bench_col1, bench_col2, bench_col3, bench_col4],
+            ["Profit Margin", "P/E Ratio", "ROE", "Revenue Growth"],
+            [fmt_pct, fmt_ratio, fmt_pct, fmt_pct],
+        ):
+            peer_avg = peer_rows[_bench_metric].mean() if not peer_rows.empty else None
+            main_value = main_row[_bench_metric]
+            delta = None
+            if peer_avg is not None and main_value is not None and not pd.isna(peer_avg) and not pd.isna(main_value):
+                delta = f"{main_value - peer_avg:+.4f} vs. peers"
+            _bench_col.metric(
+                _bench_metric,
+                _bench_fmt(main_value) if main_value is not None else "N/A",
+                delta=delta,
+            )
+
+
+def render_compare_page() -> None:
+    """Multi-ticker relative performance and metrics comparison."""
+    st.markdown("#### Multi-Stock Comparison")
+
+    symbols_list = tuple(
+        s.strip().upper()
+        for s in compare_symbols.split(",")
+        if s.strip()
+    )
+
+    if not symbols_list:
+        st.info("Enter comma-separated ticker symbols in the sidebar.")
+    else:
+        with st.spinner("Loading comparison..."):
+            histories = get_multi_price_history(
+                symbols_list,
+                period=period,
+                interval=interval,
+            )
+
+        st.plotly_chart(
+            comparison_chart(histories),
+            use_container_width=True,
+            key="compare_chart",
+        )
+
+        st.markdown("#### Fundamental Comparison")
+
+        rows = []
+
+        for sym in symbols_list:
+            cinfo = get_company_info(sym)
+
+            rows.append(
+                {
+                    "Symbol": sym,
+                    "Name": cinfo.get("shortName", "—"),
+                    "Price": cinfo.get("currentPrice")
+                    or cinfo.get("regularMarketPrice"),
+                    "Market Cap": cinfo.get("marketCap"),
+                    "P/E": cinfo.get("trailingPE"),
+                    "Forward P/E": cinfo.get("forwardPE"),
+                    "ROE": cinfo.get("returnOnEquity"),
+                    "Dividend Yield": cinfo.get("dividendYield"),
+                    "Beta": cinfo.get("beta"),
+                }
+            )
+
+        compare_df = pd.DataFrame(rows)
+
+        st.dataframe(
+            compare_df.style.format(
+                {
+                    "Price": "${:.2f}",
+                    "Market Cap": lambda x: fmt_large_number(x),
+                    "P/E": "{:.2f}",
+                    "Forward P/E": "{:.2f}",
+                    "ROE": lambda x: fmt_pct(x),
+                    "Dividend Yield": lambda x: fmt_pct(x),
+                    "Beta": "{:.2f}",
+                },
+                na_rep="N/A",
+            ),
+            use_container_width=True,
+        )
+
+
+def render_news_page() -> None:
+    """Latest company news with keyword-based sentiment tagging."""
+    st.markdown("#### Latest News")
+    raw_news = get_company_news(symbol_input, limit=10)
+    normalized = normalize_news_list(raw_news)
+
+    if not normalized:
+        st.info("No recent news found for this ticker.")
+    else:
+        # ----- NEW: NEWS SENTIMENT ANALYSIS (Aug 2026 update) ----- #
+        sentiment_df = analyze_headlines_sentiment(normalized)
+        sentiment_lookup = dict(zip(sentiment_df["title"], sentiment_df["sentiment"]))
+
+        with st.expander("🧭 News Sentiment Overview", expanded=True):
+            pos_count = int((sentiment_df["sentiment"] == "Positive").sum())
+            neu_count = int((sentiment_df["sentiment"] == "Neutral").sum())
+            neg_count = int((sentiment_df["sentiment"] == "Negative").sum())
+
+            sent_col1, sent_col2, sent_col3 = st.columns(3)
+            sent_col1.metric("🟢 Positive Headlines", pos_count)
+            sent_col2.metric("⚪ Neutral Headlines", neu_count)
+            sent_col3.metric("🔴 Negative Headlines", neg_count)
+
+            st.plotly_chart(
+                sentiment_summary_chart(sentiment_df),
+                use_container_width=True,
+                key="news_sentiment_chart",
+            )
+            st.caption(
+                "Sentiment is estimated with a simple keyword-based scan of each "
+                "headline and is meant as a quick directional signal, not "
+                "investment advice."
+            )
+        # ----- END NEW: NEWS SENTIMENT ANALYSIS ----- #
+
+        _sentiment_badges = {"Positive": "🟢", "Neutral": "⚪", "Negative": "🔴"}
+        for item in normalized:
+            col_img, col_text = st.columns([1, 5])
+            with col_img:
+                if item["thumbnail"]:
+                    try:
+                        st.image(item["thumbnail"], use_container_width=True)
+                    except Exception:
+                        st.write("📰")
+                else:
+                    st.write("📰")
+            with col_text:
+                # ----- NEW: sentiment badge next to each headline ----- #
+                _badge = _sentiment_badges.get(sentiment_lookup.get(item["title"], "Neutral"), "⚪")
+                st.markdown(f"{_badge} **[{item['title']}]({item['link']})**")
+                st.caption(f"{item['publisher']} • {item['published']}")
+            st.divider()
+
+
+def render_portfolio_overview_page() -> None:
+    """Portfolio Overview — totals and allocation breakdown at a glance."""
+    st.markdown("#### Portfolio Overview")
+    st.caption("A snapshot of total value, cost basis, and how your holdings are allocated.")
+
+    summary_df = get_portfolio_summary()
+
+    if summary_df.empty:
+        st.info("No holdings yet. Add a position on the **Holdings** page to get started.")
+    else:
+        totals = get_portfolio_totals(summary_df)
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("Total Value", fmt_large_number(totals["total_value"]))
+        t2.metric("Total Cost", fmt_large_number(totals["total_cost"]))
+        t3.metric("Unrealized P/L", fmt_large_number(totals["total_pl"]))
+        t4.metric("Return", f"{totals['total_pl_pct']:+.2f}%")
+
+        st.markdown("##### Allocation by Holding")
+        fig_allocation = go.Figure(
+            data=[
+                go.Pie(
+                    labels=summary_df["Symbol"],
+                    values=summary_df["Weight (%)"],
+                    hole=0.55,
+                    marker=dict(colors=[COLOR_ACCENT, COLOR_SMA20, COLOR_SMA50, COLOR_UP, COLOR_DOWN, COLOR_SMA200]),
+                    textinfo="label+percent",
+                )
+            ]
+        )
+        fig_allocation = _base_layout(fig_allocation, title="Portfolio Weight by Position", height=380)
+        st.plotly_chart(fig_allocation, use_container_width=True, key="portfolio_allocation_chart")
+
+
+def render_holdings_page() -> None:
+    """Holdings — add, view, and remove individual positions."""
+    st.markdown("#### Holdings")
+    st.caption("Track hypothetical or real holdings. Data is kept for this browser session only.")
+
+    with st.form("add_holding_form", clear_on_submit=True):
+        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+        with col1:
+            holding_symbol = st.text_input("Ticker", value=symbol_input)
+        with col2:
+            holding_shares = st.number_input("Shares", min_value=0.0, value=10.0, step=1.0)
+        with col3:
+            holding_cost = st.number_input("Avg Cost / Share", min_value=0.0, value=100.0, step=1.0)
+        with col4:
+            st.write("")
+            st.write("")
+            submitted = st.form_submit_button("Add / Update", use_container_width=True)
+        if submitted:
+            add_holding(holding_symbol, holding_shares, holding_cost)
+            st.toast(f"Added {holding_symbol} to portfolio")
+
+    summary_df = get_portfolio_summary()
+
+    if summary_df.empty:
+        st.info("No holdings yet. Add a position above to get started.")
+    else:
+        st.dataframe(
+            summary_df.style.format(
+                {
+                    "Shares": "{:.2f}",
+                    "Avg Cost": "${:.2f}",
+                    "Current Price": "${:.2f}",
+                    "Market Value": "${:,.2f}",
+                    "Total Cost": "${:,.2f}",
+                    "Unrealized P/L ($)": "${:,.2f}",
+                    "Unrealized P/L (%)": "{:+.2f}%",
+                    "Weight (%)": "{:.1f}%",
+                }
+            ),
+            use_container_width=True,
+        )
+
+        remove_symbol = st.selectbox("Remove a holding", options=summary_df["Symbol"].tolist())
+        if st.button("Remove Selected Holding"):
+            remove_holding(remove_symbol)
+            st.rerun()
+
+
+def render_performance_page() -> None:
+    """Performance — profit/loss breakdown per holding."""
+    st.markdown("#### Performance")
+    st.caption("Unrealized profit and loss for each position, plus overall portfolio return.")
+
+    summary_df = get_portfolio_summary()
+
+    if summary_df.empty:
+        st.info("No holdings yet. Add a position on the **Holdings** page to get started.")
+    else:
+        totals = get_portfolio_totals(summary_df)
+        p1, p2 = st.columns(2)
+        p1.metric("Total Unrealized P/L", fmt_large_number(totals["total_pl"]))
+        p2.metric("Overall Return", f"{totals['total_pl_pct']:+.2f}%")
+
+        st.markdown("##### Unrealized P/L by Holding")
+        pl_colors = [COLOR_UP if v >= 0 else COLOR_DOWN for v in summary_df["Unrealized P/L ($)"]]
+        fig_pl = go.Figure(
+            data=[
+                go.Bar(
+                    x=summary_df["Symbol"],
+                    y=summary_df["Unrealized P/L ($)"],
+                    marker_color=pl_colors,
+                )
+            ]
+        )
+        fig_pl = _base_layout(fig_pl, title="Unrealized P/L ($) by Position", height=380)
+        st.plotly_chart(fig_pl, use_container_width=True, key="portfolio_pl_chart")
+
+        st.dataframe(
+            summary_df[["Symbol", "Shares", "Avg Cost", "Current Price", "Unrealized P/L ($)", "Unrealized P/L (%)"]].style.format(
+                {
+                    "Shares": "{:.2f}",
+                    "Avg Cost": "${:.2f}",
+                    "Current Price": "${:.2f}",
+                    "Unrealized P/L ($)": "${:,.2f}",
+                    "Unrealized P/L (%)": "{:+.2f}%",
+                }
+            ),
+            use_container_width=True,
+        )
+
+
+def render_risk_analysis_page() -> None:
+    """Risk Analysis — the Risk Score gauge and its contributing factors, on its own."""
+    st.markdown("#### Risk Analysis")
+    st.caption("Volatility- and leverage-aware risk read for the currently selected ticker.")
+
+    risk_result = risk_score(info, hist)
+    risk_col1, risk_col2 = st.columns([1, 2])
+    with risk_col1:
+        st.plotly_chart(
+            gauge_chart(risk_result.score, "Risk Score"),
+            use_container_width=True,
+            key="risk_analysis_gauge",
+        )
+    with risk_col2:
+        st.markdown(f"##### Risk Breakdown — {risk_result.label}")
+        for line in risk_result.breakdown:
+            st.write(f"• {line}")
+
+
+def render_watchlist_page() -> None:
+    """Watchlist — live price snapshots for saved tickers."""
+    st.markdown("#### Watchlist")
+    st.caption("Track tickers without adding them as portfolio holdings.")
+    watchlist_df = get_watchlist_snapshot()
+    if watchlist_df.empty:
+        st.info("Your watchlist is empty. Use the sidebar to add tickers.")
+    else:
+        st.dataframe(
+            watchlist_df.style.format(
+                {"Price": "${:.2f}", "Change": "{:+.2f}", "% Change": "{:+.2f}%", "Market Cap": lambda v: fmt_large_number(v)}
+            ),
+            use_container_width=True,
+        )
+
+
+def render_alerts_page() -> None:
+    """Price alerts: set, track, and remove above/below targets."""
+    st.markdown("#### 🔔 Price Alerts")
+    st.caption("Set a target price for any ticker and see whether it's been triggered.")
+
+    with st.form("add_alert_form", clear_on_submit=True):
+        alert_col1, alert_col2, alert_col3 = st.columns([2, 1, 1])
+        with alert_col1:
+            alert_symbol = st.text_input("Ticker", value=symbol_input, key="alert_symbol_input")
+        with alert_col2:
+            alert_direction = st.selectbox("Direction", options=["above", "below"], key="alert_direction_input")
+        with alert_col3:
+            alert_target = st.number_input("Target Price ($)", min_value=0.0, step=1.0, key="alert_target_input")
+        alert_note = st.text_input("Note (optional)", key="alert_note_input")
+        submitted_alert = st.form_submit_button("➕ Add Alert")
+        if submitted_alert:
+            if alert_target <= 0:
+                st.warning("Please enter a target price greater than 0.")
+            else:
+                add_price_alert(alert_symbol, alert_target, alert_direction, alert_note)
+                st.toast(f"Alert added for {alert_symbol.strip().upper()}")
+
+    st.divider()
+
+    alerts_df = evaluate_price_alerts()
+    if alerts_df.empty:
+        st.info("No price alerts set yet. Add one above to get started.")
+    else:
+        triggered_count = int(alerts_df["Triggered"].sum())
+        if triggered_count > 0:
+            st.success(f"🔔 {triggered_count} alert(s) triggered!")
+
+        for _, alert_row in alerts_df.iterrows():
+            status_icon = "🔔 Triggered" if alert_row["Triggered"] else "⏳ Watching"
+            current_price_display = (
+                f"${alert_row['Current Price']:.2f}" if alert_row["Current Price"] is not None else "N/A"
+            )
+            with st.container(border=True):
+                a_col1, a_col2, a_col3, a_col4 = st.columns([2, 2, 2, 1])
+                a_col1.markdown(f"**{alert_row['Symbol']}** — {alert_row['Direction']} ${alert_row['Target']:.2f}")
+                a_col2.markdown(f"Current: {current_price_display}")
+                a_col3.markdown(status_icon)
+                if a_col4.button("🗑️", key=f"remove_alert_{int(alert_row['Index'])}"):
+                    remove_price_alert(int(alert_row["Index"]))
+                    st.rerun()
+                if alert_row["Note"]:
+                    st.caption(f"Note: {alert_row['Note']}")
+
+
+def render_backtest_page() -> None:
+    """SMA-crossover strategy backtest vs. buy-and-hold."""
+    st.markdown(f"#### 🔁 Backtest: SMA Crossover Strategy — {symbol_input}")
+    st.caption(
+        "Simulates going long whenever the short-term SMA crosses above the "
+        "long-term SMA, and staying in cash otherwise, compared to simply "
+        "buying and holding."
+    )
+
+    bt_col1, bt_col2, bt_col3 = st.columns(3)
+    with bt_col1:
+        bt_short_window = st.number_input(
+            "Short SMA Window", min_value=2, max_value=100, value=20, step=1, key="bt_short_window"
+        )
+    with bt_col2:
+        bt_long_window = st.number_input(
+            "Long SMA Window", min_value=5, max_value=300, value=50, step=1, key="bt_long_window"
+        )
+    with bt_col3:
+        bt_capital = st.number_input(
+            "Starting Capital ($)", min_value=100.0, value=10_000.0, step=500.0, key="bt_capital"
+        )
+
+    if bt_short_window >= bt_long_window:
+        st.warning("The short SMA window should be smaller than the long SMA window.")
+    else:
+        backtest_result = run_sma_crossover_backtest(
+            hist, short_window=int(bt_short_window), long_window=int(bt_long_window), initial_capital=bt_capital
+        )
+        equity_df = backtest_result["equity"]
+        bt_stats = backtest_result["stats"]
+        bt_trades = backtest_result["trades"]
+
+        if equity_df.empty:
+            st.info(
+                "Not enough price history for this period to run the backtest. "
+                "Try a longer chart period in the sidebar."
+            )
+        else:
+            st.plotly_chart(
+                backtest_equity_chart(equity_df, symbol_input),
+                use_container_width=True,
+                key="backtest_chart",
+            )
+
+            stat_col1, stat_col2, stat_col3, stat_col4, stat_col5 = st.columns(5)
+            stat_col1.metric("Strategy Return", f"{bt_stats['total_return_pct']:+.2f}%")
+            stat_col2.metric("Buy & Hold Return", f"{bt_stats['buyhold_return_pct']:+.2f}%")
+            stat_col3.metric("Number of Trades", f"{bt_stats['num_trades']}")
+            stat_col4.metric("Win Rate", f"{bt_stats['win_rate_pct']:.1f}%")
+            stat_col5.metric("Max Drawdown", f"{bt_stats['max_drawdown_pct']:.2f}%")
+
+            with st.expander(f"📋 Trade Log ({len(bt_trades)} trades)"):
+                if not bt_trades:
+                    st.info("No completed trades for this window combination.")
+                else:
+                    trades_df = pd.DataFrame(bt_trades)
+                    st.dataframe(
+                        trades_df.style.format(
+                            {
+                                "entry_price": "${:.2f}",
+                                "exit_price": "${:.2f}",
+                                "return_pct": "{:+.2f}%",
+                            },
+                            na_rep="N/A",
+                        ),
+                        use_container_width=True,
+                    )
+
+
+def render_dividends_page() -> None:
+    """Dividend payment history, yield, payout ratio, and growth rate."""
+    st.markdown(f"#### 💵 Dividend History — {symbol_input}")
+
+    dividend_series = get_dividend_history(symbol_input)
+
+    if dividend_series.empty:
+        st.info(f"{symbol_input} has no recorded dividend payment history.")
+    else:
+        annual_dividend = info.get("dividendRate")
+        dividend_yield = info.get("dividendYield")
+        payout_ratio = info.get("payoutRatio")
+        growth_rate = compute_dividend_growth_rate(dividend_series)
+
+        div_col1, div_col2, div_col3, div_col4 = st.columns(4)
+        div_col1.metric(
+            "Annual Dividend",
+            fmt_currency_price(annual_dividend, _DISPLAY_FX_RATE, _DISPLAY_CURRENCY_SYMBOL)
+            if annual_dividend
+            else "N/A",
+        )
+        div_col2.metric("Dividend Yield", fmt_pct(dividend_yield))
+        div_col3.metric("Payout Ratio", fmt_pct(payout_ratio))
+        div_col4.metric(
+            "Dividend Growth (CAGR)",
+            f"{growth_rate * 100:+.2f}%" if growth_rate is not None else "N/A",
+        )
+
+        st.plotly_chart(
+            dividend_history_chart(dividend_series, symbol_input),
+            use_container_width=True,
+            key="dividend_history_chart",
+        )
+
+        with st.expander(f"📋 Full Dividend Payment History ({len(dividend_series)} payments)"):
+            dividend_table = dividend_series.sort_index(ascending=False).reset_index()
+            dividend_table.columns = ["Ex-Dividend Date", "Amount ($ / share)"]
+            st.dataframe(
+                dividend_table.style.format({"Amount ($ / share)": "${:.4f}"}),
+                use_container_width=True,
+            )
+
+        st.caption(
+            "Dividend amounts are shown in the security's native currency "
+            "per share, except for the Annual Dividend metric above, which "
+            "reflects your selected Display Currency."
+        )
+
+
+def render_export_page() -> None:
+    """PDF and CSV export of the current ticker's research and metrics."""
+    st.markdown("#### Export Research Report")
+    st.caption("Generate a downloadable PDF summary of the current ticker's key data and scores.")
+
+    if st.button("🧾 Generate PDF Report", type="primary"):
+        scores = {
+            "AI Investment Score": ai_investment_score(info, hist),
+            "Buffett Score": buffett_score(info),
+            "Graham Score": graham_score(info),
+            "Risk Score": risk_score(info, hist),
+        }
+        try:
+            pdf_bytes = build_pdf_report(symbol_input, info, scores)
+            st.download_button(
+                label="⬇️ Download PDF Report",
+                data=pdf_bytes,
+                file_name=f"{symbol_input}_research_report.pdf",
+                mime="application/pdf",
+            )
+            st.success("Report generated successfully.")
+        except Exception as exc:
+            st.error(f"Failed to generate PDF report: {exc}")
+
+    st.divider()
+    st.markdown("#### Export Data as CSV")
+    st.caption("Download the raw price history and key metrics for the current ticker.")
+
+    csv_col1, csv_col2 = st.columns(2)
+
+    with csv_col1:
+        if not hist.empty:
+            price_csv = hist.to_csv(index=True).encode("utf-8")
+            st.download_button(
+                label="⬇️ Download Price History (CSV)",
+                data=price_csv,
+                file_name=f"{symbol_input}_price_history.csv",
+                mime="text/csv",
+                key="download_price_csv",
+            )
+        else:
+            st.info("No price history available to export.")
+
+    with csv_col2:
+        metrics_row = {
+            "Symbol": symbol_input,
+            "Market Cap": info.get("marketCap"),
+            "Trailing P/E": info.get("trailingPE"),
+            "Forward P/E": info.get("forwardPE"),
+            "PEG Ratio": info.get("pegRatio"),
+            "ROE": info.get("returnOnEquity"),
+            "ROA": info.get("returnOnAssets"),
+            "Profit Margin": info.get("profitMargins"),
+            "Debt to Equity": info.get("debtToEquity"),
+            "Current Ratio": info.get("currentRatio"),
+            "Dividend Yield": info.get("dividendYield"),
+        }
+        metrics_csv = pd.DataFrame([metrics_row]).to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="⬇️ Download Key Metrics (CSV)",
+            data=metrics_csv,
+            file_name=f"{symbol_input}_key_metrics.csv",
+            mime="text/csv",
+            key="download_metrics_csv",
+        )
+
+
+def render_classroom_page() -> None:
+    """Classroom tools: discussion questions, homework, quiz, teacher notes."""
+    st.markdown(f"#### 📝 Classroom Tools: {company_name} ({symbol_input})")
+    st.caption(
+        "Predefined, ready-to-use classroom materials based on the selected company. "
+        "(Template-based for now — no AI/LLM generation.)"
+    )
+
+    classroom_col1, classroom_col2 = st.columns(2)
+
+    with classroom_col1:
+        if st.button("💬 Generate Discussion Questions", use_container_width=True, key="gen_discussion"):
+            st.session_state["classroom_output"] = ("Discussion Questions", generate_discussion_questions(company_name, symbol_input))
+        if st.button("📓 Generate Homework", use_container_width=True, key="gen_homework"):
+            st.session_state["classroom_output"] = ("Homework", generate_homework(company_name, symbol_input))
+        if st.button("📝 Generate Quiz", use_container_width=True, key="gen_quiz"):
+            st.session_state["classroom_output"] = ("Quiz", generate_quiz(company_name, symbol_input, info))
+        if st.button("🎟️ Generate Exit Ticket", use_container_width=True, key="gen_exit"):
+            st.session_state["classroom_output"] = ("Exit Ticket", generate_exit_ticket(company_name))
+
+    with classroom_col2:
+        if st.button("📖 Generate Vocabulary", use_container_width=True, key="gen_vocab"):
+            st.session_state["classroom_output"] = (
+                "Vocabulary Assignment",
+                generate_vocabulary_assignment(
+                    ["Market Capitalization", "P/E Ratio", "Revenue", "Net Margin", "ROE", "Free Cash Flow"]
+                ),
+            )
+        if st.button("🧠 Generate Reflection Questions", use_container_width=True, key="gen_reflection"):
+            st.session_state["classroom_output"] = ("Reflection Questions", generate_reflection_questions(company_name, info))
+        if st.button("📂 Generate Case Study", use_container_width=True, key="gen_case_study"):
+            st.session_state["classroom_output"] = ("Case Study", generate_case_study(company_name, symbol_input, info))
+
+    st.divider()
+
+    if st.session_state.get("classroom_output"):
+        output_title, output_content = st.session_state["classroom_output"]
+        st.markdown(f"##### 📄 {output_title}")
+        if isinstance(output_content, list):
+            for _item in output_content:
+                if isinstance(_item, dict):
+                    st.markdown(f"**Q:** {_item['question']}")
+                    st.caption(f"Suggested answer: {_item['answer']}")
+                else:
+                    st.markdown(f"- {_item}")
+        else:
+            st.markdown(output_content)
+    else:
+        st.info("Click a button above to generate classroom material for this company.")
+
+    st.divider()
+
+    # ----- Teacher Notes (Requirement 6) ----- #
+    st.markdown("##### 🧑‍🏫 Teacher Notes")
+    st.caption("Notes are kept for this browser session only, using Streamlit session_state.")
+
+    if "teacher_notes" not in st.session_state:
+        st.session_state["teacher_notes"] = []
+
+    new_note = st.text_area("Write a note for this lesson", key="teacher_note_input")
+    if st.button("💾 Save Note", key="save_teacher_note"):
+        if new_note.strip():
+            st.session_state["teacher_notes"].append(
+                {
+                    "symbol": symbol_input,
+                    "note": new_note.strip(),
+                    "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                }
+            )
+            st.toast("Note saved for this session.")
+        else:
+            st.warning("Please write a note before saving.")
+
+    if st.session_state["teacher_notes"]:
+        st.markdown("###### Saved Notes")
+        for _note in reversed(st.session_state["teacher_notes"]):
+            st.markdown(f"**[{_note['timestamp']}] {_note['symbol']}:** {_note['note']}")
+    else:
+        st.caption("No notes saved yet.")
+
+
+def render_learn_page() -> None:
+    """Learn — plain-language company profile, vocabulary, quizzes, and reflection questions."""
+    learn_content = get_learn_content(symbol_input, info)
+    st.markdown(f"#### 🎓 Learn: {company_name} ({symbol_input})")
+    st.caption("Written in plain language for students — no finance background required.")
+
+    with st.expander("🏢 Company Overview", expanded=True):
+        st.write(learn_content["overview"])
+
+    with st.expander("💡 Business Model"):
+        st.write(learn_content["business_model"])
+
+    with st.expander("📦 Products & Services"):
+        st.write(learn_content["products"])
+
+    with st.expander("💰 How the Company Makes Money"):
+        st.write(learn_content["how_it_makes_money"])
+
+    with st.expander("⚔️ Major Competitors"):
+        st.write(learn_content["competitors"])
+
+    with st.expander("🏭 Industry"):
+        st.write(learn_content["industry"])
+
+    with st.expander("🏆 Competitive Advantages"):
+        st.write(learn_content["advantages"])
+
+    with st.expander("⚠️ Potential Risks"):
+        st.write(learn_content["risks"])
+
+    # ----- Did You Know? card (Requirement 8) ----- #
+    st.markdown("##### 💡 Did You Know?")
+    did_you_know_fact = get_did_you_know(symbol_input, info)
+    st.info(f"**Did you know?** {did_you_know_fact}")
+    if st.button("🔄 Show Another Fact", key="dyk_refresh"):
+        st.rerun()
+
+    st.divider()
+
+    # ----- Key Vocabulary (Requirement 5: vocabulary cards) ----- #
+    st.markdown("##### 📖 Key Vocabulary")
+    st.caption("Click each term below to see its definition, why it matters, an example, and a common mistake students make.")
+    for _vocab_term in [
+        "Market Capitalization",
+        "P/E Ratio",
+        "Revenue",
+        "Net Margin",
+        "ROE",
+        "Free Cash Flow",
+    ]:
+        render_metric_education(_vocab_term)
+
+    st.divider()
+
+    # ----- Think Like an Investor (Requirement 9) ----- #
+    st.markdown("##### 🧠 Think Like an Investor")
+    st.caption("Reflect on these questions individually or discuss them as a class.")
+    for _i, _question in enumerate(generate_reflection_questions(company_name, info), start=1):
+        st.markdown(f"**{_i}.** {_question}")
+
+    st.divider()
+
+    # =============================================================== #
+    # NEW: CLASSROOM ACTIVITIES EXPANDER
+    # Added below the existing educational explanation content, per
+    # Education Mode enhancement request. Purely additive — does not
+    # touch any analytics, charts, or scoring logic.
+    # =============================================================== #
+    with st.expander("🏫 Classroom Activities", expanded=False):
+        st.markdown("### Think–Pair–Share")
+        st.markdown(
+            f"Based on today's data, do you think **{company_name}** is overvalued or "
+            f"undervalued? Support your answer using the P/E ratio."
+        )
+
+        st.markdown("### Small Group Activity")
+        st.markdown(
+            f"Have students compare **{company_name}** with another company of their "
+            f"choice using:"
+        )
+        st.markdown(
+            "- Market Cap\n"
+            "- Revenue Growth\n"
+            "- Profit Margin\n"
+            "- P/E Ratio"
+        )
+        st.markdown("Students should decide which company they would invest in and explain why.")
+
+        st.markdown("### Whole Class Discussion")
+        st.markdown(
+            "- Should investors rely more on financial statements or stock charts?\n"
+            "- Can a great company still be a bad investment?\n"
+            "- What financial metric surprised you the most today?"
+        )
+    # ----- END NEW: CLASSROOM ACTIVITIES EXPANDER ----- #
+
+    # =============================================================== #
+    # NEW: INVESTING VOCABULARY EXPANDER
+    # =============================================================== #
+    with st.expander("📚 Investing Vocabulary", expanded=False):
+        _quick_vocab_terms = {
+            "Market Capitalization": "The total value of a company's shares — share price multiplied by the number of shares outstanding.",
+            "Revenue": "The total amount of money a company brings in from sales, before any expenses are subtracted.",
+            "Net Income": "The company's actual profit after ALL expenses, taxes, and costs have been subtracted from revenue.",
+            "Earnings Per Share (EPS)": "A company's profit divided by its number of shares — shows how much profit is earned per share.",
+            "P/E Ratio": "A company's share price divided by its earnings per share — shows how much investors are paying for each dollar of profit.",
+            "Dividend": "A cash payment some companies make to shareholders, usually from profits.",
+            "Bull Market": "A period when stock prices are generally rising and investor confidence is high.",
+            "Bear Market": "A period when stock prices are generally falling and investor confidence is low.",
+            "Volatility": "How much and how quickly a stock's price moves up and down over time.",
+            "Risk": "The chance that an investment could lose value or not perform as expected.",
+            "Diversification": "Spreading investments across different assets to reduce overall risk.",
+            "Return on Equity (ROE)": "A measure of how efficiently a company uses shareholders' money to generate profit.",
+        }
+        for _term, _definition in _quick_vocab_terms.items():
+            st.markdown(f"**{_term}:** {_definition}")
+    # ----- END NEW: INVESTING VOCABULARY EXPANDER ----- #
+
+    # =============================================================== #
+    # NEW: QUICK QUIZ EXPANDER
+    # =============================================================== #
+    with st.expander("📝 Quick Quiz", expanded=False):
+        _quiz_questions = [
+            {
+                "question": "If a stock has a P/E ratio of 25, what does this generally mean?",
+                "options": [
+                    "Investors are paying $25 for every $1 of earnings",
+                    "The company lost $25 million",
+                    "The stock price will double in 25 days",
+                    "The company pays a 25% dividend",
+                ],
+                "correct": "Investors are paying $25 for every $1 of earnings",
+                "explanation": "The P/E ratio shows how much investors are willing to pay for each dollar of a company's earnings.",
+            },
+            {
+                "question": "What is 'revenue'?",
+                "options": [
+                    "The total money a company earns from sales before expenses",
+                    "The profit left after all expenses",
+                    "The amount of debt a company owes",
+                    "The number of employees a company has",
+                ],
+                "correct": "The total money a company earns from sales before expenses",
+                "explanation": "Revenue is the total sales a company brings in — it doesn't account for costs yet.",
+            },
+            {
+                "question": "What is a dividend?",
+                "options": [
+                    "A cash payment companies sometimes make to shareholders",
+                    "A fee investors pay to buy stock",
+                    "A type of stock market crash",
+                    "A government tax on stock profits",
+                ],
+                "correct": "A cash payment companies sometimes make to shareholders",
+                "explanation": "Dividends are a way companies share profits directly with their shareholders.",
+            },
+            {
+                "question": "Why do investors diversify their portfolio?",
+                "options": [
+                    "To reduce risk by spreading investments across different assets",
+                    "To guarantee higher returns every year",
+                    "To avoid paying any taxes",
+                    "To make the portfolio harder to track",
+                ],
+                "correct": "To reduce risk by spreading investments across different assets",
+                "explanation": "Diversification helps reduce risk — if one investment performs poorly, others may offset the loss.",
+            },
+            {
+                "question": "How is market capitalization calculated?",
+                "options": [
+                    "Share price multiplied by total number of shares outstanding",
+                    "Total revenue minus total expenses",
+                    "Total debt plus total equity",
+                    "Stock price divided by earnings per share",
+                ],
+                "correct": "Share price multiplied by total number of shares outstanding",
+                "explanation": "Market cap = share price × total shares outstanding, representing the company's total market value.",
+            },
+        ]
+
+        _quiz_score = 0
+        for _q_idx, _quiz_item in enumerate(_quiz_questions, start=1):
+            st.markdown(f"**Question {_q_idx}:** {_quiz_item['question']}")
+            _student_answer = st.radio(
+                f"Select an answer for question {_q_idx}",
+                options=_quiz_item["options"],
+                index=None,
+                key=f"student_quiz_q{_q_idx}",
+                label_visibility="collapsed",
+            )
+            if _student_answer is not None:
+                if _student_answer == _quiz_item["correct"]:
+                    _quiz_score += 1
+                    st.success(f"✅ Correct! {_quiz_item['explanation']}")
+                else:
+                    st.error(f"❌ Not quite. {_quiz_item['explanation']}")
+            st.markdown("---")
+
+        st.markdown("#### Quiz Score:")
+        st.markdown(f"### {_quiz_score} / 5")
+    # ----- END NEW: QUICK QUIZ EXPANDER ----- #
+
+    # =============================================================== #
+    # NEW: TEACHER NOTES (LESSON PLAN) EXPANDER
+    # =============================================================== #
+    with st.expander("👨‍🏫 Teacher Notes", expanded=False):
+        st.markdown("**Recommended Grade:**")
+        st.markdown("9–12")
+
+        st.markdown("**Course:**")
+        st.markdown("Emerging Financial Markets")
+
+        st.markdown("**Estimated Lesson Time:**")
+        st.markdown("25–40 minutes")
+
+        st.markdown("**Learning Objectives:**")
+        st.markdown(
+            "- Interpret stock data\n"
+            "- Understand valuation metrics\n"
+            "- Compare companies\n"
+            "- Build investment reasoning"
+        )
+
+        st.markdown("**Homework:**")
+        st.markdown(
+            "Choose another publicly traded company and write a one-page investment "
+            "recommendation using at least five metrics from the app."
+        )
+
+
+def render_education_mode_page() -> None:
+    """Education Mode — combines the Learn and Classroom content under one
+    always-reachable nav page (previously gated behind a toggle)."""
+    st.markdown("#### 🎓 Education Mode")
+    st.caption(
+        "Classroom-friendly explanations and tools for the currently selected "
+        "ticker. The 'Show inline explanations' toggle in the sidebar also adds "
+        "quick-reference term cards throughout Dashboard and Stock Research."
+    )
+    edu_inner_tabs = st.tabs(["🎓 Learn", "📝 Classroom"])
+    with edu_inner_tabs[0]:
+        render_learn_page()
+    with edu_inner_tabs[1]:
+        render_classroom_page()
+
+
+def _render_coming_soon(title: str, icon: str, description: str) -> None:
+    """Shared layout for not-yet-built features — honestly labeled rather
+    than faked, so nothing in the nav claims functionality that doesn't exist."""
+    st.markdown(f"#### {icon} {title}")
+    st.info(f"🚧 **Coming soon.** {description}")
+    st.caption("This page is a placeholder in the current build and isn't functional yet.")
+
+
+def render_stock_screener_page() -> None:
+    _render_coming_soon(
+        "Stock Screener",
+        "🖥️",
+        "Filter stocks across the market by metric thresholds (P/E, market cap, "
+        "sector, growth, and more) to build a custom candidate list.",
+    )
+
+
+def render_options_analyzer_page() -> None:
+    _render_coming_soon(
+        "Options Analyzer",
+        "🎯",
+        "Analyze options chains, Greeks, and payoff diagrams for the selected "
+        "ticker.",
+    )
+
+
+def render_ai_tutor_page() -> None:
+    _render_coming_soon(
+        "AI Tutor",
+        "🤖",
+        "A conversational tutor for asking follow-up questions about financial "
+        "concepts and the data shown elsewhere in the app, distinct from the "
+        "static explanations already in Education Mode.",
+    )
+
+
 # =========================================================================== #
 # SECTION 8: STREAMLIT APPLICATION (originally app.py)
 # =========================================================================== #
@@ -3203,35 +5083,49 @@ with st.sidebar:
     st.markdown("## 📈 AI Stock Research")
     st.caption("Bloomberg-inspired equity research dashboard")
 
-    # ----- NEW: DARK/LIGHT THEME TOGGLE ----- #
-    _theme_index = 0 if _theme_mode == "Dark" else 1
-    st.radio(
-        "🌓 Theme",
-        options=["Dark", "Light"],
-        index=_theme_index,
-        key="theme_mode_toggle",
-        horizontal=True,
-        help="Switch between the dashboard's dark and light color schemes.",
+    # ----- NEW: SIDEBAR NAVIGATION (UI overhaul) ----- #
+    # Replaces the old flat/nested tab bar with Streamlit's native grouped
+    # sidebar navigation, matching the v2 dashboard design. Each page below
+    # is the exact same content that used to live in a `with tab_X:` block
+    # (see SECTION 7E above) — Stock Screener, Options Analyzer, and AI
+    # Tutor are honestly labeled "Coming Soon" placeholders since they
+    # aren't built yet, rather than being faked as functional.
+    pg = st.navigation(
+        {
+            "Research": [
+                st.Page(render_dashboard_page, title="Dashboard", icon="📊", default=True),
+                st.Page(render_stock_research_page, title="Stock Research", icon="🔍"),
+                st.Page(render_dcf_valuation_page, title="DCF Valuation", icon="🧮"),
+                st.Page(render_peers_page, title="Comparables", icon="🏆"),
+                st.Page(render_compare_page, title="Compare Stocks", icon="⚖️"),
+                st.Page(render_earnings_page, title="Earnings", icon="📅"),
+                st.Page(render_news_page, title="News & Sentiment", icon="📰"),
+            ],
+            "Portfolio": [
+                st.Page(render_portfolio_overview_page, title="Portfolio Overview", icon="💼"),
+                st.Page(render_holdings_page, title="Holdings", icon="📋"),
+                st.Page(render_performance_page, title="Performance", icon="📈"),
+                st.Page(render_risk_analysis_page, title="Risk Analysis", icon="⚠️"),
+            ],
+            "Tools": [
+                st.Page(render_stock_screener_page, title="Stock Screener", icon="🖥️"),
+                st.Page(render_watchlist_page, title="Watchlist", icon="⭐"),
+                st.Page(render_alerts_page, title="Alerts", icon="🔔"),
+                st.Page(render_options_analyzer_page, title="Options Analyzer", icon="🎯"),
+                st.Page(render_backtest_page, title="Backtest", icon="🔁"),
+                st.Page(render_dividends_page, title="Dividends", icon="💵"),
+                st.Page(render_export_page, title="Export", icon="📤"),
+            ],
+            "Learn": [
+                st.Page(render_education_mode_page, title="Education Mode", icon="🎓"),
+                st.Page(render_ai_tutor_page, title="AI Tutor", icon="🤖"),
+            ],
+        }
     )
-    # ----- END NEW: DARK/LIGHT THEME TOGGLE ----- #
-
-    # ----- NEW: MULTI-CURRENCY DISPLAY SUPPORT (v1.3) ----- #
-    display_currency = st.selectbox(
-        "💱 Display Currency",
-        options=SUPPORTED_CURRENCIES,
-        index=0,
-        key="display_currency_select",
-        help="Converts market cap, revenue, and other dollar figures into "
-        "the selected currency using a live FX rate. Underlying data is "
-        "still sourced in the security's native currency.",
-    )
-    _DISPLAY_FX_RATE = get_fx_rate(display_currency)
-    _DISPLAY_CURRENCY_SYMBOL = CURRENCY_SYMBOLS.get(display_currency, "$")
-    if display_currency != "USD":
-        st.caption(f"1 USD ≈ {_DISPLAY_FX_RATE:.4f} {display_currency}")
-    # ----- END NEW: MULTI-CURRENCY DISPLAY SUPPORT ----- #
+    # ----- END NEW: SIDEBAR NAVIGATION ----- #
 
     st.divider()
+    st.markdown("#### Session Settings")
 
     symbol_input = st.text_input("Ticker Symbol", value="AAPL", placeholder="e.g. AAPL, MSFT, TSLA").strip().upper()
 
@@ -3246,57 +5140,85 @@ with st.sidebar:
         index=0,
     )
 
-    st.divider()
-    st.markdown("#### Chart Overlays")
-    show_sma20 = st.checkbox("20-Day SMA", value=True)
-    show_sma50 = st.checkbox("50-Day SMA", value=True)
-    show_sma200 = st.checkbox("200-Day SMA", value=False)
-    show_bollinger = st.checkbox("Bollinger Bands", value=False)
+    with st.expander("Chart Overlays"):
+        show_sma20 = st.checkbox("20-Day SMA", value=True)
+        show_sma50 = st.checkbox("50-Day SMA", value=True)
+        show_sma200 = st.checkbox("200-Day SMA", value=False)
+        show_bollinger = st.checkbox("Bollinger Bands", value=False)
 
-    st.divider()
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("⭐ Watchlist", use_container_width=True):
-            add_to_watchlist(symbol_input)
-            st.toast(f"{symbol_input} added to watchlist")
-    with col_b:
-        if st.button("🗑️ Remove", use_container_width=True):
-            remove_from_watchlist(symbol_input)
-            st.toast(f"{symbol_input} removed")
+    with st.expander("Watchlist Quick Actions"):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("⭐ Add", use_container_width=True):
+                add_to_watchlist(symbol_input)
+                st.toast(f"{symbol_input} added to watchlist")
+        with col_b:
+            if st.button("🗑️ Remove", use_container_width=True):
+                remove_from_watchlist(symbol_input)
+                st.toast(f"{symbol_input} removed")
+        if st.session_state.get(WATCHLIST_KEY):
+            st.caption("Current watchlist:")
+            st.write(", ".join(st.session_state[WATCHLIST_KEY]))
 
-    if st.session_state.get(WATCHLIST_KEY):
-        st.caption("Current watchlist:")
-        st.write(", ".join(st.session_state[WATCHLIST_KEY]))
-
-    st.divider()
-    st.markdown("#### Compare Stocks")
-    compare_symbols = st.text_input(
-        "Comma-separated tickers", value="AAPL, MSFT, GOOGL", key="compare_input"
-    )
+    with st.expander("Compare Stocks — Tickers"):
+        compare_symbols = st.text_input(
+            "Comma-separated tickers", value="AAPL, MSFT, GOOGL", key="compare_input"
+        )
 
     # ----- NEW: EDUCATION MODE (Requirement 1) ----- #
-    st.divider()
-    st.markdown("#### 🎓 Classroom Tools")
-    education_mode = st.checkbox(
-        "🎓 Education Mode",
-        value=False,
-        key="education_mode_toggle",
-        help="Turns on classroom-friendly metric explanations plus new "
-        "'Learn' and 'Classroom' tabs. When off, the app behaves exactly "
-        "as it did before.",
-    )
-    student_mode = False
-    if education_mode:
-        student_mode = st.checkbox(
-            "👦 Student Mode",
+    with st.expander("🎓 Classroom Tools"):
+        education_mode = st.checkbox(
+            "🎓 Show inline explanations",
             value=False,
-            key="student_mode_toggle",
-            help="Hides advanced metrics and simplifies terminology for "
-            "student use.",
+            key="education_mode_toggle",
+            help="Adds classroom-friendly metric explanation cards to "
+            "Dashboard and Stock Research. The full Learn/Classroom content "
+            "is always available from the Learn section of the sidebar nav "
+            "above, regardless of this toggle.",
         )
+        student_mode = False
+        if education_mode:
+            student_mode = st.checkbox(
+                "👦 Student Mode",
+                value=False,
+                key="student_mode_toggle",
+                help="Hides advanced metrics and simplifies terminology for "
+                "student use.",
+            )
     # ----- END NEW: EDUCATION MODE ----- #
 
+    # ----- NEW: MULTI-CURRENCY DISPLAY SUPPORT (v1.3) ----- #
+    with st.expander("💱 Display Currency"):
+        display_currency = st.selectbox(
+            "Currency",
+            options=SUPPORTED_CURRENCIES,
+            index=0,
+            key="display_currency_select",
+            label_visibility="collapsed",
+            help="Converts market cap, revenue, and other dollar figures into "
+            "the selected currency using a live FX rate. Underlying data is "
+            "still sourced in the security's native currency.",
+        )
+        _DISPLAY_FX_RATE = get_fx_rate(display_currency)
+        _DISPLAY_CURRENCY_SYMBOL = CURRENCY_SYMBOLS.get(display_currency, "$")
+        if display_currency != "USD":
+            st.caption(f"1 USD ≈ {_DISPLAY_FX_RATE:.4f} {display_currency}")
+    # ----- END NEW: MULTI-CURRENCY DISPLAY SUPPORT ----- #
+
     st.divider()
+
+    # ----- NEW: DARK/LIGHT THEME TOGGLE — moved to bottom of sidebar ----- #
+    _theme_index = 0 if _theme_mode == "Dark" else 1
+    st.radio(
+        "🌓 Theme",
+        options=["Dark", "Light"],
+        index=_theme_index,
+        key="theme_mode_toggle",
+        horizontal=True,
+        help="Switch between the dashboard's dark and light color schemes.",
+    )
+    # ----- END NEW: DARK/LIGHT THEME TOGGLE ----- #
+
     st.caption("⚠️ For educational purposes only. Not financial advice.")
 
 
@@ -3371,1492 +5293,7 @@ with header_col3:
 st.divider()
 
 # --------------------------------------------------------------------------- #
-# Tabs
+# Render the selected page
 # --------------------------------------------------------------------------- #
 
-# ----- NEW: UI CLEANUP — grouped navigation instead of one flat row of -----
-# up to 17 tabs. Tabs are organized into a small number of top-level
-# groups (Research / News / Tools / Learn / Export), each containing the
-# same individual tabs as before as a nested row. Every `with tab_X:`
-# content block later in this file is completely unchanged — only how
-# these tab objects get created changes here.
-_top_level_labels = ["📊 Research", "📰 News", "💼 Tools"]
-if education_mode:
-    _top_level_labels.append("🎓 Learn")
-_top_level_labels.append("📤 Export")
-
-_top_tabs = st.tabs(_top_level_labels)
-
-with _top_tabs[0]:
-    (
-        tab_overview,
-        tab_technical,
-        tab_fundamentals,
-        tab_financials,
-        tab_analyst,
-        tab_valuation,
-        tab_scores,
-    ) = st.tabs(
-        ["Overview", "Technical", "Fundamentals", "Financials", "Analyst", "Valuation", "AI Scores"]
-    )
-
-tab_news = _top_tabs[1]
-
-with _top_tabs[2]:
-    (
-        tab_portfolio,
-        tab_compare,
-        tab_alerts,
-        tab_peers,
-        tab_backtest,
-        tab_dividends,
-    ) = st.tabs(
-        ["Portfolio", "Compare", "🔔 Alerts", "🏆 Peers", "🔁 Backtest", "💵 Dividends"]
-    )
-
-if education_mode:
-    with _top_tabs[3]:
-        tab_learn, tab_classroom = st.tabs(["🎓 Learn", "📝 Classroom"])
-    tab_export = _top_tabs[4]
-else:
-    tab_learn, tab_classroom = None, None
-    tab_export = _top_tabs[3]
-# ----- END NEW: UI CLEANUP — grouped navigation -----
-
-
-# --------------------------------------------------------------------------- #
-# Overview tab
-# --------------------------------------------------------------------------- #
-
-with tab_overview:
-    # ----- NEW: EDUCATION MODE — student callout (Requirement 7) ----- #
-    if education_mode and student_mode:
-        st.success(
-            "🌟 Key Concept: A stock's price reflects what investors are willing to pay "
-            "today for a share of the company's future profits."
-        )
-    # ----- END NEW ----- #
-
-    with st.expander("📄 Company Profile", expanded=True):
-        summary = info.get("longBusinessSummary")
-        if summary:
-            st.write(summary)
-        else:
-            st.info("No company description available.")
-
-        cols = st.columns(4)
-        cols[0].metric("Employees", f"{info.get('fullTimeEmployees', 'N/A'):,}" if info.get("fullTimeEmployees") else "N/A")
-        cols[1].metric("Website", info.get("website", "N/A"))
-        cols[2].metric("Exchange", info.get("exchange", "N/A"))
-        cols[3].metric("Currency", info.get("currency", "N/A"))
-
-    st.markdown("#### Price Chart")
-    fig_price = candlestick_chart(
-        hist, symbol_input, show_sma20, show_sma50, show_sma200, show_bollinger
-    )
-    st.plotly_chart(
-        fig_price,
-        use_container_width=True,
-        key="price_chart",
-    )
-    fig_vol = volume_chart(hist, symbol_input)
-    st.plotly_chart(
-        fig_vol,
-        use_container_width=True,
-        key="volume_chart",
-    )
-    st.markdown("#### Key Financial Metrics")
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric(label_for("Market Cap", education_mode, student_mode), fmt_large_number(info.get("marketCap")))
-    m2.metric(label_for("P/E (Trailing)", education_mode, student_mode), fmt_ratio(info.get("trailingPE")))
-    m3.metric("Forward P/E", fmt_ratio(info.get("forwardPE")))
-    if not (education_mode and student_mode):
-        m4.metric("PEG Ratio", fmt_ratio(info.get("pegRatio")))
-    m5.metric("Dividend Yield", fmt_pct(info.get("dividendYield")))
-
-    m6, m7, m8, m9, m10 = st.columns(5)
-    m6.metric(label_for("ROE", education_mode, student_mode), fmt_pct(info.get("returnOnEquity")))
-    m7.metric(label_for("ROA", education_mode, student_mode), fmt_pct(info.get("returnOnAssets")))
-    m8.metric(label_for("Revenue (TTM)", education_mode, student_mode), fmt_large_number(info.get("totalRevenue")))
-    m9.metric("Total Cash", fmt_large_number(info.get("totalCash")))
-    m10.metric("Total Debt", fmt_large_number(info.get("totalDebt")))
-
-    # ----- NEW: EDUCATION MODE — expandable metric explanations (Requirement 2) ----- #
-    if education_mode:
-        st.markdown("##### 📚 Learn About These Metrics")
-        for _metric_term in [
-            "Market Capitalization",
-            "P/E Ratio",
-            "Forward P/E",
-            "PEG Ratio",
-            "Dividend Yield",
-            "ROE",
-            "ROA",
-            "Revenue",
-        ]:
-            render_metric_education(_metric_term)
-    # ----- END NEW: EDUCATION MODE ----- #
-
-
-# --------------------------------------------------------------------------- #
-# Technical tab
-# --------------------------------------------------------------------------- #
-
-with tab_technical:
-    st.markdown("#### Candlestick Chart with Overlays")
-
-    st.plotly_chart(
-        candlestick_chart(
-            hist,
-            symbol_input,
-            show_sma20,
-            show_sma50,
-            show_sma200,
-            show_bollinger,
-        ),
-        use_container_width=True,
-        key="chart1",
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.plotly_chart(
-            rsi_chart(hist),
-            use_container_width=True,
-            key="chart2",
-        )
-
-    with col2:
-        st.plotly_chart(
-            macd_chart(hist),
-            use_container_width=True,
-            key="chart3",
-        )
-
-    st.plotly_chart(
-        support_resistance_chart(hist, symbol_input),
-        use_container_width=True,
-        key="chart4",
-    )
-
-    with st.expander("ℹ️ Support & Resistance Levels"):
-        levels = support_resistance(hist)
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-            st.write(levels["support"])
-
-        with c2:
-            st.write(levels["resistance"])
-    st.markdown("#### Valuation & Profitability")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric(label_for("Market Cap", education_mode, student_mode), fmt_large_number(info.get("marketCap")))
-    col2.metric("Trailing P/E", fmt_ratio(info.get("trailingPE")))
-    col3.metric("Forward P/E", fmt_ratio(info.get("forwardPE")))
-    col4.metric("PEG Ratio", fmt_ratio(info.get("pegRatio")))
-
-    # ----- NEW: EDUCATION MODE — Student Mode hides advanced metrics (Requirement 7) ----- #
-    if not (education_mode and student_mode):
-        col5, col6, col7, col8 = st.columns(4)
-        col5.metric("Price / Book", fmt_ratio(info.get("priceToBook")))
-        col6.metric("Price / Sales", fmt_ratio(info.get("priceToSalesTrailing12Months")))
-        col7.metric("EV / EBITDA", fmt_ratio(info.get("enterpriseToEbitda")))
-        col8.metric("Beta", fmt_ratio(info.get("beta")))
-    # ----- END NEW: EDUCATION MODE ----- #
-
-    st.markdown("#### Profitability & Returns")
-    col9, col10, col11, col12 = st.columns(4)
-    col9.metric(label_for("ROE", education_mode, student_mode), fmt_pct(info.get("returnOnEquity")))
-    col10.metric(label_for("ROA", education_mode, student_mode), fmt_pct(info.get("returnOnAssets")))
-    col11.metric("Profit Margin", fmt_pct(info.get("profitMargins")))
-    col12.metric("Operating Margin", fmt_pct(info.get("operatingMargins")))
-
-    st.markdown("#### Balance Sheet Snapshot")
-    col13, col14, col15, col16 = st.columns(4)
-    col13.metric("Total Cash", fmt_large_number(info.get("totalCash")))
-    col14.metric("Total Debt", fmt_large_number(info.get("totalDebt")))
-    # ----- NEW: EDUCATION MODE — Student Mode hides advanced metrics (Requirement 7) ----- #
-    if not (education_mode and student_mode):
-        col15.metric("Debt / Equity", fmt_ratio(info.get("debtToEquity")))
-        col16.metric("Current Ratio", fmt_ratio(info.get("currentRatio")))
-    # ----- END NEW: EDUCATION MODE ----- #
-
-    # ----- NEW: EDUCATION MODE — expandable metric explanations (Requirement 2) ----- #
-    if education_mode:
-        st.markdown("##### 📚 Learn About These Metrics")
-        for _metric_term in [
-            "Beta",
-            "Gross Margin",
-            "Operating Margin",
-            "Net Margin",
-            "Debt to Equity",
-            "Current Ratio",
-            "Enterprise Value",
-            "EBITDA",
-        ]:
-            render_metric_education(_metric_term)
-    # ----- END NEW: EDUCATION MODE ----- #
-
-    st.markdown("#### Revenue & Earnings Trend")
-    income_stmt = get_income_statement(symbol_input)
-    earnings_df = get_earnings(symbol_input)
-
-    col_rev, col_earn = st.columns(2)
-    with col_rev:
-        st.plotly_chart(
-            revenue_chart(income_stmt),
-            use_container_width=True,
-            key="chart5",
-        )
-    with col_earn:
-        st.plotly_chart(
-            earnings_chart(earnings_df),
-            use_container_width=True,
-            key="chart6",
-        )
-
-# --------------------------------------------------------------------------- #
-# Financials tab
-# --------------------------------------------------------------------------- #
-
-with tab_financials:
-    quarterly = st.toggle("Show Quarterly Data", value=False)
-
-    with st.expander("💵 Income Statement", expanded=True):
-        income = get_income_statement(symbol_input, quarterly=quarterly)
-        if income.empty:
-            st.info("Income statement data not available.")
-        else:
-            st.dataframe(income, use_container_width=True)
-
-    with st.expander("🏦 Balance Sheet"):
-        balance = get_balance_sheet(symbol_input, quarterly=quarterly)
-        if balance.empty:
-            st.info("Balance sheet data not available.")
-        else:
-            st.dataframe(balance, use_container_width=True)
-
-    with st.expander("💸 Cash Flow Statement"):
-        cashflow = get_cash_flow(symbol_input, quarterly=quarterly)
-        if cashflow.empty:
-            st.info("Cash flow data not available.")
-        else:
-            st.dataframe(cashflow, use_container_width=True)
-
-
-# --------------------------------------------------------------------------- #
-# Analyst tab
-# --------------------------------------------------------------------------- #
-
-with tab_analyst:
-    st.markdown("#### Analyst Recommendations")
-    recs = get_recommendations(symbol_input)
-    if recs.empty:
-        st.info("No analyst recommendation data available.")
-    else:
-        st.dataframe(recs, use_container_width=True)
-
-    st.markdown("#### Price Targets")
-    targets = get_price_targets(symbol_input)
-    if not targets:
-        st.info("No analyst price target data available.")
-    else:
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Low", fmt_large_number(targets.get("low")) if targets.get("low") else "N/A")
-        col2.metric("Mean", fmt_large_number(targets.get("mean")) if targets.get("mean") else "N/A")
-        col3.metric("Median", fmt_large_number(targets.get("median")) if targets.get("median") else "N/A")
-        col4.metric("High", fmt_large_number(targets.get("high")) if targets.get("high") else "N/A")
-
-        current_price = live.get("price")
-        mean_target = targets.get("mean")
-        if current_price and mean_target:
-            upside = (mean_target - current_price) / current_price * 100
-            st.metric("Implied Upside vs. Mean Target", f"{upside:+.2f}%")
-
-
-# --------------------------------------------------------------------------- #
-# News tab
-# --------------------------------------------------------------------------- #
-
-with tab_news:
-    st.markdown("#### Latest News")
-    raw_news = get_company_news(symbol_input, limit=10)
-    normalized = normalize_news_list(raw_news)
-
-    if not normalized:
-        st.info("No recent news found for this ticker.")
-    else:
-        # ----- NEW: NEWS SENTIMENT ANALYSIS (Aug 2026 update) ----- #
-        sentiment_df = analyze_headlines_sentiment(normalized)
-        sentiment_lookup = dict(zip(sentiment_df["title"], sentiment_df["sentiment"]))
-
-        with st.expander("🧭 News Sentiment Overview", expanded=True):
-            pos_count = int((sentiment_df["sentiment"] == "Positive").sum())
-            neu_count = int((sentiment_df["sentiment"] == "Neutral").sum())
-            neg_count = int((sentiment_df["sentiment"] == "Negative").sum())
-
-            sent_col1, sent_col2, sent_col3 = st.columns(3)
-            sent_col1.metric("🟢 Positive Headlines", pos_count)
-            sent_col2.metric("⚪ Neutral Headlines", neu_count)
-            sent_col3.metric("🔴 Negative Headlines", neg_count)
-
-            st.plotly_chart(
-                sentiment_summary_chart(sentiment_df),
-                use_container_width=True,
-                key="news_sentiment_chart",
-            )
-            st.caption(
-                "Sentiment is estimated with a simple keyword-based scan of each "
-                "headline and is meant as a quick directional signal, not "
-                "investment advice."
-            )
-        # ----- END NEW: NEWS SENTIMENT ANALYSIS ----- #
-
-        _sentiment_badges = {"Positive": "🟢", "Neutral": "⚪", "Negative": "🔴"}
-        for item in normalized:
-            col_img, col_text = st.columns([1, 5])
-            with col_img:
-                if item["thumbnail"]:
-                    try:
-                        st.image(item["thumbnail"], use_container_width=True)
-                    except Exception:
-                        st.write("📰")
-                else:
-                    st.write("📰")
-            with col_text:
-                # ----- NEW: sentiment badge next to each headline ----- #
-                _badge = _sentiment_badges.get(sentiment_lookup.get(item["title"], "Neutral"), "⚪")
-                st.markdown(f"{_badge} **[{item['title']}]({item['link']})**")
-                st.caption(f"{item['publisher']} • {item['published']}")
-            st.divider()
-
-
-# --------------------------------------------------------------------------- #
-# Valuation tab
-# --------------------------------------------------------------------------- #
-
-with tab_valuation:
-    st.markdown("#### Graham Intrinsic Value")
-    eps = info.get("trailingEps")
-    book_value = info.get("bookValue")
-    g_number = graham_number(eps, book_value)
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Trailing EPS", f"{eps:.2f}" if eps else "N/A")
-    col2.metric("Book Value / Share", f"{book_value:.2f}" if book_value else "N/A")
-    col3.metric("Graham Number", f"${g_number:.2f}" if g_number else "N/A")
-
-    if g_number and live.get("price"):
-        mos = margin_of_safety(g_number, live["price"])
-        if mos is not None:
-            st.metric("Margin of Safety vs. Current Price", f"{mos:+.2f}%")
-
-    st.divider()
-    # ================================================================= #
-    # NEW: FORECAST-DRIVEN DCF VALUATION MODULE
-    # Replaces the old single-line "grow last year's FCF by X%" model
-    # with a proper Revenue -> EBIT -> NOPAT -> FCFF build-up, an
-    # estimated WACC, Bear/Base/Bull scenarios, and a sensitivity table.
-    # All math lives in SECTION 5B above (pure functions, no Streamlit
-    # dependency); this block is UI only.
-    # ================================================================= #
-    st.markdown("#### Discounted Cash Flow (DCF) Valuation")
-    st.caption(
-        "A forecast-driven DCF: historical Revenue → EBIT → NOPAT → FCFF, "
-        "discounted using an estimated WACC, across Bear / Base / Bull scenarios."
-    )
-
-    hist_financials = get_historical_financials(symbol_input)
-
-    if hist_financials is None:
-        st.warning(
-            f"Historical financial statement data isn't available for "
-            f"{symbol_input}, so a forecast-driven DCF can't be built for "
-            f"this ticker. Try a different company."
-        )
-    else:
-        if hist_financials.data_warnings:
-            with st.expander("⚠️ Data Notes", expanded=False):
-                for note in hist_financials.data_warnings:
-                    st.caption(f"• {note}")
-
-        derived = derive_base_assumptions(hist_financials)
-        default_growth = derived["revenue_growth"] if derived["revenue_growth"] is not None else 0.08
-        default_margin = derived["ebit_margin"] if derived["ebit_margin"] is not None else 0.15
-        default_da_pct = derived["da_pct_revenue"] if derived["da_pct_revenue"] is not None else 0.04
-        default_capex_pct = derived["capex_pct_revenue"] if derived["capex_pct_revenue"] is not None else 0.05
-        default_nwc_pct = derived["nwc_pct_revenue"] if derived["nwc_pct_revenue"] is not None else 0.01
-        default_tax_rate = hist_financials.effective_tax_rate or 0.21
-
-        beta_val = info.get("beta") or 1.0
-        market_cap_val = info.get("marketCap") or 0.0
-        total_debt_val = info.get("totalDebt") or 0.0
-        risk_free_rate = 0.04
-        equity_risk_premium = 0.05
-        credit_spread = 0.015
-
-        wacc_estimate = compute_wacc(
-            risk_free_rate=risk_free_rate,
-            equity_risk_premium=equity_risk_premium,
-            beta=beta_val,
-            credit_spread=credit_spread,
-            tax_rate=default_tax_rate,
-            market_cap=market_cap_val,
-            total_debt=total_debt_val,
-        )
-
-        st.markdown("##### Base-Case Assumptions")
-        st.caption(
-            "Defaults are derived from up to 3 years of financial history "
-            "and an estimated WACC — adjust anything below."
-        )
-        a_col1, a_col2, a_col3 = st.columns(3)
-        with a_col1:
-            rev_growth_input = st.slider(
-                "Revenue Growth", -10.0, 40.0, round(default_growth * 100, 1), 0.5, key="dcf2_rev_growth"
-            ) / 100
-            ebit_margin_input = st.slider(
-                "EBIT Margin", 0.0, 60.0, round(default_margin * 100, 1), 0.5, key="dcf2_ebit_margin"
-            ) / 100
-        with a_col2:
-            tax_rate_input = st.slider(
-                "Tax Rate", 0.0, 40.0, round(default_tax_rate * 100, 1), 0.5, key="dcf2_tax_rate"
-            ) / 100
-            wacc_input = st.slider(
-                "WACC", 3.0, 20.0, round(wacc_estimate.wacc * 100, 1), 0.1, key="dcf2_wacc"
-            ) / 100
-        with a_col3:
-            terminal_growth_input = st.slider(
-                "Terminal Growth", 0.0, 5.0, 2.5, 0.1, key="dcf2_terminal_growth"
-            ) / 100
-            projection_years_input = st.slider("Forecast Years", 3, 10, 5, 1, key="dcf2_years")
-
-        with st.expander("🧮 How the suggested WACC was built"):
-            st.markdown(
-                f"- Cost of Equity (CAPM) = {risk_free_rate:.1%} risk-free "
-                f"+ {beta_val:.2f} beta × {equity_risk_premium:.1%} equity risk premium "
-                f"= **{wacc_estimate.cost_of_equity:.2%}**\n"
-                f"- Pre-tax Cost of Debt = {risk_free_rate:.1%} risk-free "
-                f"+ {credit_spread:.1%} credit spread = **{wacc_estimate.cost_of_debt_pretax:.2%}**\n"
-                f"- After-tax Cost of Debt = pre-tax × (1 − {tax_rate_input:.1%} tax) "
-                f"= **{wacc_estimate.cost_of_debt_aftertax:.2%}**\n"
-                f"- Weights: {wacc_estimate.equity_weight:.1%} equity / "
-                f"{wacc_estimate.debt_weight:.1%} debt (by market cap vs. total debt)\n"
-                f"- **Suggested WACC = {wacc_estimate.wacc:.2%}** "
-                f"(used as the slider default above — feel free to override it)"
-            )
-
-        base_revenue = hist_financials.revenue[0]  # most recent year, most-recent-first order
-        net_debt_val = total_debt_val - (info.get("totalCash") or 0.0)
-        shares_out_val = info.get("sharesOutstanding")
-
-        base_assumptions_dict = {
-            "revenue_growth": rev_growth_input,
-            "ebit_margin": ebit_margin_input,
-            "tax_rate": tax_rate_input,
-            "da_pct_revenue": default_da_pct,
-            "capex_pct_revenue": default_capex_pct,
-            "nwc_pct_revenue": default_nwc_pct,
-            "wacc": wacc_input,
-            "terminal_growth": terminal_growth_input,
-        }
-
-        scenarios = run_bear_base_bull(
-            base_revenue=base_revenue,
-            base_assumptions=base_assumptions_dict,
-            net_debt=net_debt_val,
-            shares_outstanding=shares_out_val,
-            projection_years=projection_years_input,
-        )
-        base_result = scenarios["Base"]
-
-        suitability_warnings = check_dcf_suitability(
-            sector=info.get("sector"),
-            industry=info.get("industry"),
-            base_fcff=base_result.forecast[0].fcff if base_result.forecast else None,
-            hist=hist_financials,
-            revenue_growth_assumption=rev_growth_input,
-        )
-        if suitability_warnings:
-            with st.expander("⚠️ Is a basic DCF appropriate for this company?", expanded=True):
-                for warning_text in suitability_warnings:
-                    st.warning(warning_text)
-
-        st.markdown("##### Bear / Base / Bull Valuation")
-        scenario_cols = st.columns(3)
-        for scenario_col, scenario_label in zip(scenario_cols, ["Bear", "Base", "Bull"]):
-            scenario_result = scenarios[scenario_label]
-            with scenario_col:
-                st.markdown(f"**{scenario_label} Case**")
-                if scenario_result.intrinsic_value_per_share:
-                    st.metric(
-                        "Intrinsic Value / Share",
-                        f"${scenario_result.intrinsic_value_per_share:,.2f}",
-                    )
-                    if live.get("price"):
-                        scenario_mos = margin_of_safety(
-                            scenario_result.intrinsic_value_per_share, live["price"]
-                        )
-                        if scenario_mos is not None:
-                            st.caption(f"{scenario_mos:+.1f}% vs. current price")
-                else:
-                    st.metric("Intrinsic Value / Share", "N/A")
-
-        st.markdown("##### Base-Case 5-Year Forecast")
-        forecast_df = pd.DataFrame(
-            [
-                {
-                    "Year": f.year_label,
-                    "Revenue": f.revenue,
-                    "EBIT": f.ebit,
-                    "NOPAT": f.nopat,
-                    "D&A": f.da,
-                    "CapEx": f.capex,
-                    "Δ NWC": f.change_in_nwc,
-                    "FCFF": f.fcff,
-                    "PV of FCFF": f.pv_fcff,
-                }
-                for f in base_result.forecast
-            ]
-        )
-        money_cols = [c for c in forecast_df.columns if c != "Year"]
-        st.dataframe(
-            forecast_df.style.format({c: "${:,.0f}" for c in money_cols}),
-            use_container_width=True,
-        )
-        st.caption(
-            f"Terminal Value: {fmt_large_number(base_result.terminal_value)} | "
-            f"PV of Terminal Value: {fmt_large_number(base_result.pv_terminal_value)} | "
-            f"Enterprise Value: {fmt_large_number(base_result.enterprise_value)} | "
-            f"Equity Value: {fmt_large_number(base_result.equity_value)}"
-        )
-
-        # Deterministic Python computed every number above; this narrative
-        # only DESCRIBES those already-computed results in plain English —
-        # it does not perform any valuation math of its own.
-        narrative = generate_dcf_narrative(company_name, symbol_input, scenarios, live.get("price"))
-        st.info(f"🤖 {narrative}")
-
-        st.markdown("##### Sensitivity: WACC vs. Terminal Growth")
-        st.caption("Intrinsic value per share across a range of WACC and terminal growth combinations, holding all other Base-case assumptions fixed.")
-        wacc_range = [wacc_input + d for d in (-0.02, -0.01, 0.0, 0.01, 0.02)]
-        tg_range = [terminal_growth_input + d for d in (-0.01, -0.005, 0.0, 0.005, 0.01)]
-        sensitivity_grid = sensitivity_table(
-            base_revenue=base_revenue,
-            base_assumptions=base_assumptions_dict,
-            net_debt=net_debt_val,
-            shares_outstanding=shares_out_val,
-            projection_years=projection_years_input,
-            wacc_range=wacc_range,
-            terminal_growth_range=tg_range,
-        )
-
-        sens_labels_wacc = [f"{w:.1%}" for w in wacc_range]
-        sens_labels_tg = [f"{t:.1%}" for t in tg_range]
-        sens_df = pd.DataFrame(sensitivity_grid, index=sens_labels_wacc, columns=sens_labels_tg)
-        st.dataframe(
-            sens_df.style.format(lambda v: f"${v:,.2f}" if v is not None else "N/A"),
-            use_container_width=True,
-        )
-
-        heatmap_text = [
-            [f"${v:,.0f}" if v is not None else "N/A" for v in row] for row in sensitivity_grid
-        ]
-        fig_sensitivity = go.Figure(
-            data=go.Heatmap(
-                z=sensitivity_grid,
-                x=sens_labels_tg,
-                y=sens_labels_wacc,
-                colorscale="RdYlGn",
-                text=heatmap_text,
-                texttemplate="%{text}",
-                colorbar=dict(title="$/share"),
-            )
-        )
-        fig_sensitivity = _base_layout(fig_sensitivity, title="Intrinsic Value / Share Sensitivity", height=400)
-        fig_sensitivity.update_layout(xaxis_title="Terminal Growth Rate", yaxis_title="WACC")
-        st.plotly_chart(fig_sensitivity, use_container_width=True, key="dcf_sensitivity_heatmap")
-
-        if education_mode:
-            with st.expander("📚 See the actual FCFF calculation for this company"):
-                f1 = base_result.forecast[0]
-                st.markdown(
-                    f"**FCFF (Year 1) = EBIT × (1 − Tax Rate) + D&A − CapEx − ΔNWC**\n\n"
-                    f"= {fmt_large_number(f1.ebit)} × (1 − {tax_rate_input:.1%}) "
-                    f"+ {fmt_large_number(f1.da)} − {fmt_large_number(f1.capex)} "
-                    f"− {fmt_large_number(f1.change_in_nwc)}\n\n"
-                    f"= {fmt_large_number(f1.nopat)} (NOPAT) + {fmt_large_number(f1.da)} "
-                    f"− {fmt_large_number(f1.capex)} − {fmt_large_number(f1.change_in_nwc)}\n\n"
-                    f"= **{fmt_large_number(f1.fcff)}**"
-                )
-            st.markdown("##### 📖 DCF Concepts Explained")
-            for _dcf_term in ["WACC", "NOPAT", "EBIT", "Terminal Value", "Net Working Capital (NWC)", "FCFF"]:
-                render_metric_education(_dcf_term)
-
-    st.info(
-        "⚠️ DCF valuation is highly sensitive to its assumptions and should "
-        "NOT be treated as a guaranteed prediction of future stock price. "
-        "Small changes in growth, margin, WACC, or terminal growth can "
-        "produce very different results — that's inherent to the model, "
-        "not a flaw in the calculation. A basic DCF like this one is also "
-        "generally less reliable for banks, insurers, companies with "
-        "negative free cash flow, very young companies, highly cyclical "
-        "businesses, and extremely high-growth companies (see the warnings "
-        "above if any applied to this ticker)."
-    )
-    # ================================================================= #
-    # END NEW: FORECAST-DRIVEN DCF VALUATION MODULE
-    # ================================================================= #
-
-
-# --------------------------------------------------------------------------- #
-# AI Scores tab
-# --------------------------------------------------------------------------- #
-
-with tab_scores:
-    st.markdown("#### AI-Generated Investment Scores")
-    st.caption("Transparent, rule-based scoring — not machine-learning black boxes.")
-
-    ai_result = ai_investment_score(info, hist)
-    buffett_result = buffett_score(info)
-    graham_result = graham_score(info)
-    risk_result = risk_score(info, hist)
-
-    gauge_col1, gauge_col2, gauge_col3, gauge_col4 = st.columns(4)
-    with gauge_col1:
-        st.plotly_chart(
-            gauge_chart(ai_result.score, "AI Score"),
-            use_container_width=True,
-            key="chart7",
-        )
-    with gauge_col2:
-        st.plotly_chart(
-            gauge_chart(buffett_result.score, "Buffett Score"),
-            use_container_width=True,
-            key="chart8",
-        )
-    with gauge_col3:
-        st.plotly_chart(
-            gauge_chart(graham_result.score, "Graham Score"),
-            use_container_width=True,
-            key="chart9",
-        )
-    with gauge_col4:
-        st.plotly_chart(
-            gauge_chart(risk_result.score, "Risk Score"),
-            use_container_width=True,
-            key="chart10",
-        )
-    score_col1, score_col2 = st.columns(2)
-    with score_col1:
-        with st.expander(f"AI Investment Score Breakdown — {ai_result.label}", expanded=True):
-            for line in ai_result.breakdown:
-                st.write(f"• {line}")
-        with st.expander(f"Buffett Score Breakdown — {buffett_result.label}"):
-            for line in buffett_result.breakdown:
-                st.write(f"• {line}")
-    with score_col2:
-        with st.expander(f"Graham Score Breakdown — {graham_result.label}"):
-            for line in graham_result.breakdown:
-                st.write(f"• {line}")
-        with st.expander(f"Risk Score Breakdown — {risk_result.label}"):
-            for line in risk_result.breakdown:
-                st.write(f"• {line}")
-
-
-# --------------------------------------------------------------------------- #
-# Portfolio tab
-# --------------------------------------------------------------------------- #
-
-with tab_portfolio:
-    st.markdown("#### Portfolio Calculator")
-    st.caption("Track hypothetical or real holdings. Data is kept for this browser session only.")
-
-    with st.form("add_holding_form", clear_on_submit=True):
-        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-        with col1:
-            holding_symbol = st.text_input("Ticker", value=symbol_input)
-        with col2:
-            holding_shares = st.number_input("Shares", min_value=0.0, value=10.0, step=1.0)
-        with col3:
-            holding_cost = st.number_input("Avg Cost / Share", min_value=0.0, value=100.0, step=1.0)
-        with col4:
-            st.write("")
-            st.write("")
-            submitted = st.form_submit_button("Add / Update", use_container_width=True)
-        if submitted:
-            add_holding(holding_symbol, holding_shares, holding_cost)
-            st.toast(f"Added {holding_symbol} to portfolio")
-
-    summary_df = get_portfolio_summary()
-
-    if summary_df.empty:
-        st.info("No holdings yet. Add a position above to get started.")
-    else:
-        totals = get_portfolio_totals(summary_df)
-        t1, t2, t3, t4 = st.columns(4)
-        t1.metric("Total Value", fmt_large_number(totals["total_value"]))
-        t2.metric("Total Cost", fmt_large_number(totals["total_cost"]))
-        t3.metric("Unrealized P/L", fmt_large_number(totals["total_pl"]))
-        t4.metric("Return", f"{totals['total_pl_pct']:+.2f}%")
-
-        st.dataframe(
-            summary_df.style.format(
-                {
-                    "Shares": "{:.2f}",
-                    "Avg Cost": "${:.2f}",
-                    "Current Price": "${:.2f}",
-                    "Market Value": "${:,.2f}",
-                    "Total Cost": "${:,.2f}",
-                    "Unrealized P/L ($)": "${:,.2f}",
-                    "Unrealized P/L (%)": "{:+.2f}%",
-                    "Weight (%)": "{:.1f}%",
-                }
-            ),
-            use_container_width=True,
-        )
-
-        remove_symbol = st.selectbox("Remove a holding", options=summary_df["Symbol"].tolist())
-        if st.button("Remove Selected Holding"):
-            remove_holding(remove_symbol)
-            st.rerun()
-
-    st.divider()
-    st.markdown("#### Watchlist")
-    watchlist_df = get_watchlist_snapshot()
-    if watchlist_df.empty:
-        st.info("Your watchlist is empty. Use the sidebar to add tickers.")
-    else:
-        st.dataframe(
-            watchlist_df.style.format(
-                {"Price": "${:.2f}", "Change": "{:+.2f}", "% Change": "{:+.2f}%", "Market Cap": lambda v: fmt_large_number(v)}
-            ),
-            use_container_width=True,
-        )
-
-
-# --------------------------------------------------------------------------- #
-# Compare tab
-# --------------------------------------------------------------------------- #
-
-with tab_compare:
-    st.markdown("#### Multi-Stock Comparison")
-
-    symbols_list = tuple(
-        s.strip().upper()
-        for s in compare_symbols.split(",")
-        if s.strip()
-    )
-
-    if not symbols_list:
-        st.info("Enter comma-separated ticker symbols in the sidebar.")
-    else:
-        with st.spinner("Loading comparison..."):
-            histories = get_multi_price_history(
-                symbols_list,
-                period=period,
-                interval=interval,
-            )
-
-        st.plotly_chart(
-            comparison_chart(histories),
-            use_container_width=True,
-            key="compare_chart",
-        )
-
-        st.markdown("#### Fundamental Comparison")
-
-        rows = []
-
-        for sym in symbols_list:
-            cinfo = get_company_info(sym)
-
-            rows.append(
-                {
-                    "Symbol": sym,
-                    "Name": cinfo.get("shortName", "—"),
-                    "Price": cinfo.get("currentPrice")
-                    or cinfo.get("regularMarketPrice"),
-                    "Market Cap": cinfo.get("marketCap"),
-                    "P/E": cinfo.get("trailingPE"),
-                    "Forward P/E": cinfo.get("forwardPE"),
-                    "ROE": cinfo.get("returnOnEquity"),
-                    "Dividend Yield": cinfo.get("dividendYield"),
-                    "Beta": cinfo.get("beta"),
-                }
-            )
-
-        compare_df = pd.DataFrame(rows)
-
-        st.dataframe(
-            compare_df.style.format(
-                {
-                    "Price": "${:.2f}",
-                    "Market Cap": lambda x: fmt_large_number(x),
-                    "P/E": "{:.2f}",
-                    "Forward P/E": "{:.2f}",
-                    "ROE": lambda x: fmt_pct(x),
-                    "Dividend Yield": lambda x: fmt_pct(x),
-                    "Beta": "{:.2f}",
-                },
-                na_rep="N/A",
-            ),
-            use_container_width=True,
-        )
-
-
-# =========================================================================== #
-# NEW: PRICE ALERTS / PEER COMPARISON / BACKTEST tabs  ***Aug 2026 update***
-# Always visible (not gated by Education Mode). Purely additive — none of
-# the existing tabs, charts, or analytics above are modified.
-# =========================================================================== #
-
-# --------------------------------------------------------------------------- #
-# 🔔 Alerts tab
-# --------------------------------------------------------------------------- #
-
-with tab_alerts:
-    st.markdown("#### 🔔 Price Alerts")
-    st.caption("Set a target price for any ticker and see whether it's been triggered.")
-
-    with st.form("add_alert_form", clear_on_submit=True):
-        alert_col1, alert_col2, alert_col3 = st.columns([2, 1, 1])
-        with alert_col1:
-            alert_symbol = st.text_input("Ticker", value=symbol_input, key="alert_symbol_input")
-        with alert_col2:
-            alert_direction = st.selectbox("Direction", options=["above", "below"], key="alert_direction_input")
-        with alert_col3:
-            alert_target = st.number_input("Target Price ($)", min_value=0.0, step=1.0, key="alert_target_input")
-        alert_note = st.text_input("Note (optional)", key="alert_note_input")
-        submitted_alert = st.form_submit_button("➕ Add Alert")
-        if submitted_alert:
-            if alert_target <= 0:
-                st.warning("Please enter a target price greater than 0.")
-            else:
-                add_price_alert(alert_symbol, alert_target, alert_direction, alert_note)
-                st.toast(f"Alert added for {alert_symbol.strip().upper()}")
-
-    st.divider()
-
-    alerts_df = evaluate_price_alerts()
-    if alerts_df.empty:
-        st.info("No price alerts set yet. Add one above to get started.")
-    else:
-        triggered_count = int(alerts_df["Triggered"].sum())
-        if triggered_count > 0:
-            st.success(f"🔔 {triggered_count} alert(s) triggered!")
-
-        for _, alert_row in alerts_df.iterrows():
-            status_icon = "🔔 Triggered" if alert_row["Triggered"] else "⏳ Watching"
-            current_price_display = (
-                f"${alert_row['Current Price']:.2f}" if alert_row["Current Price"] is not None else "N/A"
-            )
-            with st.container(border=True):
-                a_col1, a_col2, a_col3, a_col4 = st.columns([2, 2, 2, 1])
-                a_col1.markdown(f"**{alert_row['Symbol']}** — {alert_row['Direction']} ${alert_row['Target']:.2f}")
-                a_col2.markdown(f"Current: {current_price_display}")
-                a_col3.markdown(status_icon)
-                if a_col4.button("🗑️", key=f"remove_alert_{int(alert_row['Index'])}"):
-                    remove_price_alert(int(alert_row["Index"]))
-                    st.rerun()
-                if alert_row["Note"]:
-                    st.caption(f"Note: {alert_row['Note']}")
-
-
-# --------------------------------------------------------------------------- #
-# 🏆 Peers tab
-# --------------------------------------------------------------------------- #
-
-with tab_peers:
-    st.markdown(f"#### 🏆 Peer & Sector Comparison — {symbol_input}")
-
-    curated_peers = get_peer_symbols(symbol_input)
-    default_peer_text = ", ".join(curated_peers)
-    if not curated_peers:
-        st.info(
-            f"No curated peer list is available for {symbol_input} yet. "
-            f"Enter peer tickers manually below (sector: {info.get('sector', 'N/A')})."
-        )
-
-    peer_text = st.text_input(
-        "Peer tickers (comma-separated)",
-        value=default_peer_text,
-        key="peer_symbols_input",
-    )
-    peer_symbols = [p.strip().upper() for p in peer_text.split(",") if p.strip()][:6]
-
-    if not peer_symbols:
-        st.warning("Add at least one peer ticker to run a comparison.")
-    else:
-        peer_df = build_peer_comparison_table(symbol_input, peer_symbols)
-
-        st.markdown("##### Benchmarking Table")
-        st.dataframe(
-            peer_df.style.format(
-                {
-                    "Market Cap": lambda x: fmt_large_number(x),
-                    "Revenue Growth": lambda x: fmt_pct(x),
-                    "Profit Margin": lambda x: fmt_pct(x),
-                    "P/E Ratio": lambda x: fmt_ratio(x),
-                    "ROE": lambda x: fmt_pct(x),
-                },
-                na_rep="N/A",
-            ),
-            use_container_width=True,
-        )
-
-        st.markdown("##### Compare a Metric")
-        peer_metric = st.selectbox(
-            "Metric",
-            options=["Market Cap", "Revenue Growth", "Profit Margin", "P/E Ratio", "ROE"],
-            key="peer_metric_select",
-        )
-        st.plotly_chart(
-            peer_comparison_chart(peer_df, peer_metric, symbol_input),
-            use_container_width=True,
-            key="peer_chart",
-        )
-
-        main_row = peer_df[peer_df["Symbol"] == symbol_input].iloc[0]
-        peer_rows = peer_df[peer_df["Symbol"] != symbol_input]
-
-        st.markdown(f"##### {symbol_input} vs. Peer Average")
-        bench_col1, bench_col2, bench_col3, bench_col4 = st.columns(4)
-        for _bench_col, _bench_metric, _bench_fmt in zip(
-            [bench_col1, bench_col2, bench_col3, bench_col4],
-            ["Profit Margin", "P/E Ratio", "ROE", "Revenue Growth"],
-            [fmt_pct, fmt_ratio, fmt_pct, fmt_pct],
-        ):
-            peer_avg = peer_rows[_bench_metric].mean() if not peer_rows.empty else None
-            main_value = main_row[_bench_metric]
-            delta = None
-            if peer_avg is not None and main_value is not None and not pd.isna(peer_avg) and not pd.isna(main_value):
-                delta = f"{main_value - peer_avg:+.4f} vs. peers"
-            _bench_col.metric(
-                _bench_metric,
-                _bench_fmt(main_value) if main_value is not None else "N/A",
-                delta=delta,
-            )
-
-
-# --------------------------------------------------------------------------- #
-# 🔁 Backtest tab
-# --------------------------------------------------------------------------- #
-
-with tab_backtest:
-    st.markdown(f"#### 🔁 Backtest: SMA Crossover Strategy — {symbol_input}")
-    st.caption(
-        "Simulates going long whenever the short-term SMA crosses above the "
-        "long-term SMA, and staying in cash otherwise, compared to simply "
-        "buying and holding."
-    )
-
-    bt_col1, bt_col2, bt_col3 = st.columns(3)
-    with bt_col1:
-        bt_short_window = st.number_input(
-            "Short SMA Window", min_value=2, max_value=100, value=20, step=1, key="bt_short_window"
-        )
-    with bt_col2:
-        bt_long_window = st.number_input(
-            "Long SMA Window", min_value=5, max_value=300, value=50, step=1, key="bt_long_window"
-        )
-    with bt_col3:
-        bt_capital = st.number_input(
-            "Starting Capital ($)", min_value=100.0, value=10_000.0, step=500.0, key="bt_capital"
-        )
-
-    if bt_short_window >= bt_long_window:
-        st.warning("The short SMA window should be smaller than the long SMA window.")
-    else:
-        backtest_result = run_sma_crossover_backtest(
-            hist, short_window=int(bt_short_window), long_window=int(bt_long_window), initial_capital=bt_capital
-        )
-        equity_df = backtest_result["equity"]
-        bt_stats = backtest_result["stats"]
-        bt_trades = backtest_result["trades"]
-
-        if equity_df.empty:
-            st.info(
-                "Not enough price history for this period to run the backtest. "
-                "Try a longer chart period in the sidebar."
-            )
-        else:
-            st.plotly_chart(
-                backtest_equity_chart(equity_df, symbol_input),
-                use_container_width=True,
-                key="backtest_chart",
-            )
-
-            stat_col1, stat_col2, stat_col3, stat_col4, stat_col5 = st.columns(5)
-            stat_col1.metric("Strategy Return", f"{bt_stats['total_return_pct']:+.2f}%")
-            stat_col2.metric("Buy & Hold Return", f"{bt_stats['buyhold_return_pct']:+.2f}%")
-            stat_col3.metric("Number of Trades", f"{bt_stats['num_trades']}")
-            stat_col4.metric("Win Rate", f"{bt_stats['win_rate_pct']:.1f}%")
-            stat_col5.metric("Max Drawdown", f"{bt_stats['max_drawdown_pct']:.2f}%")
-
-            with st.expander(f"📋 Trade Log ({len(bt_trades)} trades)"):
-                if not bt_trades:
-                    st.info("No completed trades for this window combination.")
-                else:
-                    trades_df = pd.DataFrame(bt_trades)
-                    st.dataframe(
-                        trades_df.style.format(
-                            {
-                                "entry_price": "${:.2f}",
-                                "exit_price": "${:.2f}",
-                                "return_pct": "{:+.2f}%",
-                            },
-                            na_rep="N/A",
-                        ),
-                        use_container_width=True,
-                    )
-
-
-# =========================================================================== #
-# NEW: DIVIDEND HISTORY TRACKER tab  ***v1.3***
-# Always visible (not gated by Education Mode). Purely additive.
-# =========================================================================== #
-
-with tab_dividends:
-    st.markdown(f"#### 💵 Dividend History — {symbol_input}")
-
-    dividend_series = get_dividend_history(symbol_input)
-
-    if dividend_series.empty:
-        st.info(f"{symbol_input} has no recorded dividend payment history.")
-    else:
-        annual_dividend = info.get("dividendRate")
-        dividend_yield = info.get("dividendYield")
-        payout_ratio = info.get("payoutRatio")
-        growth_rate = compute_dividend_growth_rate(dividend_series)
-
-        div_col1, div_col2, div_col3, div_col4 = st.columns(4)
-        div_col1.metric(
-            "Annual Dividend",
-            fmt_currency_price(annual_dividend, _DISPLAY_FX_RATE, _DISPLAY_CURRENCY_SYMBOL)
-            if annual_dividend
-            else "N/A",
-        )
-        div_col2.metric("Dividend Yield", fmt_pct(dividend_yield))
-        div_col3.metric("Payout Ratio", fmt_pct(payout_ratio))
-        div_col4.metric(
-            "Dividend Growth (CAGR)",
-            f"{growth_rate * 100:+.2f}%" if growth_rate is not None else "N/A",
-        )
-
-        st.plotly_chart(
-            dividend_history_chart(dividend_series, symbol_input),
-            use_container_width=True,
-            key="dividend_history_chart",
-        )
-
-        with st.expander(f"📋 Full Dividend Payment History ({len(dividend_series)} payments)"):
-            dividend_table = dividend_series.sort_index(ascending=False).reset_index()
-            dividend_table.columns = ["Ex-Dividend Date", "Amount ($ / share)"]
-            st.dataframe(
-                dividend_table.style.format({"Amount ($ / share)": "${:.4f}"}),
-                use_container_width=True,
-            )
-
-        st.caption(
-            "Dividend amounts are shown in the security's native currency "
-            "per share, except for the Annual Dividend metric above, which "
-            "reflects your selected Display Currency."
-        )
-
-
-# =========================================================================== #
-# NEW: EDUCATION MODE — "🎓 Learn" and "📝 Classroom" tabs
-# (Requirements 3, 4, 6, 8, 9). Only rendered when Education Mode is on;
-# tab_learn / tab_classroom are None otherwise, matching the conditional
-# tab creation above.
-# =========================================================================== #
-
-if education_mode:
-    company_name = info.get("shortName") or info.get("longName") or symbol_input
-    learn_content = get_learn_content(symbol_input, info)
-
-    # ----------------------------------------------------------------- #
-    # 🎓 Learn tab (Requirement 3)
-    # ----------------------------------------------------------------- #
-    with tab_learn:
-        st.markdown(f"#### 🎓 Learn: {company_name} ({symbol_input})")
-        st.caption("Written in plain language for students — no finance background required.")
-
-        with st.expander("🏢 Company Overview", expanded=True):
-            st.write(learn_content["overview"])
-
-        with st.expander("💡 Business Model"):
-            st.write(learn_content["business_model"])
-
-        with st.expander("📦 Products & Services"):
-            st.write(learn_content["products"])
-
-        with st.expander("💰 How the Company Makes Money"):
-            st.write(learn_content["how_it_makes_money"])
-
-        with st.expander("⚔️ Major Competitors"):
-            st.write(learn_content["competitors"])
-
-        with st.expander("🏭 Industry"):
-            st.write(learn_content["industry"])
-
-        with st.expander("🏆 Competitive Advantages"):
-            st.write(learn_content["advantages"])
-
-        with st.expander("⚠️ Potential Risks"):
-            st.write(learn_content["risks"])
-
-        # ----- Did You Know? card (Requirement 8) ----- #
-        st.markdown("##### 💡 Did You Know?")
-        did_you_know_fact = get_did_you_know(symbol_input, info)
-        st.info(f"**Did you know?** {did_you_know_fact}")
-        if st.button("🔄 Show Another Fact", key="dyk_refresh"):
-            st.rerun()
-
-        st.divider()
-
-        # ----- Key Vocabulary (Requirement 5: vocabulary cards) ----- #
-        st.markdown("##### 📖 Key Vocabulary")
-        st.caption("Click each term below to see its definition, why it matters, an example, and a common mistake students make.")
-        for _vocab_term in [
-            "Market Capitalization",
-            "P/E Ratio",
-            "Revenue",
-            "Net Margin",
-            "ROE",
-            "Free Cash Flow",
-        ]:
-            render_metric_education(_vocab_term)
-
-        st.divider()
-
-        # ----- Think Like an Investor (Requirement 9) ----- #
-        st.markdown("##### 🧠 Think Like an Investor")
-        st.caption("Reflect on these questions individually or discuss them as a class.")
-        for _i, _question in enumerate(generate_reflection_questions(company_name, info), start=1):
-            st.markdown(f"**{_i}.** {_question}")
-
-        st.divider()
-
-        # =============================================================== #
-        # NEW: CLASSROOM ACTIVITIES EXPANDER
-        # Added below the existing educational explanation content, per
-        # Education Mode enhancement request. Purely additive — does not
-        # touch any analytics, charts, or scoring logic.
-        # =============================================================== #
-        with st.expander("🏫 Classroom Activities", expanded=False):
-            st.markdown("### Think–Pair–Share")
-            st.markdown(
-                f"Based on today's data, do you think **{company_name}** is overvalued or "
-                f"undervalued? Support your answer using the P/E ratio."
-            )
-
-            st.markdown("### Small Group Activity")
-            st.markdown(
-                f"Have students compare **{company_name}** with another company of their "
-                f"choice using:"
-            )
-            st.markdown(
-                "- Market Cap\n"
-                "- Revenue Growth\n"
-                "- Profit Margin\n"
-                "- P/E Ratio"
-            )
-            st.markdown("Students should decide which company they would invest in and explain why.")
-
-            st.markdown("### Whole Class Discussion")
-            st.markdown(
-                "- Should investors rely more on financial statements or stock charts?\n"
-                "- Can a great company still be a bad investment?\n"
-                "- What financial metric surprised you the most today?"
-            )
-        # ----- END NEW: CLASSROOM ACTIVITIES EXPANDER ----- #
-
-        # =============================================================== #
-        # NEW: INVESTING VOCABULARY EXPANDER
-        # =============================================================== #
-        with st.expander("📚 Investing Vocabulary", expanded=False):
-            _quick_vocab_terms = {
-                "Market Capitalization": "The total value of a company's shares — share price multiplied by the number of shares outstanding.",
-                "Revenue": "The total amount of money a company brings in from sales, before any expenses are subtracted.",
-                "Net Income": "The company's actual profit after ALL expenses, taxes, and costs have been subtracted from revenue.",
-                "Earnings Per Share (EPS)": "A company's profit divided by its number of shares — shows how much profit is earned per share.",
-                "P/E Ratio": "A company's share price divided by its earnings per share — shows how much investors are paying for each dollar of profit.",
-                "Dividend": "A cash payment some companies make to shareholders, usually from profits.",
-                "Bull Market": "A period when stock prices are generally rising and investor confidence is high.",
-                "Bear Market": "A period when stock prices are generally falling and investor confidence is low.",
-                "Volatility": "How much and how quickly a stock's price moves up and down over time.",
-                "Risk": "The chance that an investment could lose value or not perform as expected.",
-                "Diversification": "Spreading investments across different assets to reduce overall risk.",
-                "Return on Equity (ROE)": "A measure of how efficiently a company uses shareholders' money to generate profit.",
-            }
-            for _term, _definition in _quick_vocab_terms.items():
-                st.markdown(f"**{_term}:** {_definition}")
-        # ----- END NEW: INVESTING VOCABULARY EXPANDER ----- #
-
-        # =============================================================== #
-        # NEW: QUICK QUIZ EXPANDER
-        # =============================================================== #
-        with st.expander("📝 Quick Quiz", expanded=False):
-            _quiz_questions = [
-                {
-                    "question": "If a stock has a P/E ratio of 25, what does this generally mean?",
-                    "options": [
-                        "Investors are paying $25 for every $1 of earnings",
-                        "The company lost $25 million",
-                        "The stock price will double in 25 days",
-                        "The company pays a 25% dividend",
-                    ],
-                    "correct": "Investors are paying $25 for every $1 of earnings",
-                    "explanation": "The P/E ratio shows how much investors are willing to pay for each dollar of a company's earnings.",
-                },
-                {
-                    "question": "What is 'revenue'?",
-                    "options": [
-                        "The total money a company earns from sales before expenses",
-                        "The profit left after all expenses",
-                        "The amount of debt a company owes",
-                        "The number of employees a company has",
-                    ],
-                    "correct": "The total money a company earns from sales before expenses",
-                    "explanation": "Revenue is the total sales a company brings in — it doesn't account for costs yet.",
-                },
-                {
-                    "question": "What is a dividend?",
-                    "options": [
-                        "A cash payment companies sometimes make to shareholders",
-                        "A fee investors pay to buy stock",
-                        "A type of stock market crash",
-                        "A government tax on stock profits",
-                    ],
-                    "correct": "A cash payment companies sometimes make to shareholders",
-                    "explanation": "Dividends are a way companies share profits directly with their shareholders.",
-                },
-                {
-                    "question": "Why do investors diversify their portfolio?",
-                    "options": [
-                        "To reduce risk by spreading investments across different assets",
-                        "To guarantee higher returns every year",
-                        "To avoid paying any taxes",
-                        "To make the portfolio harder to track",
-                    ],
-                    "correct": "To reduce risk by spreading investments across different assets",
-                    "explanation": "Diversification helps reduce risk — if one investment performs poorly, others may offset the loss.",
-                },
-                {
-                    "question": "How is market capitalization calculated?",
-                    "options": [
-                        "Share price multiplied by total number of shares outstanding",
-                        "Total revenue minus total expenses",
-                        "Total debt plus total equity",
-                        "Stock price divided by earnings per share",
-                    ],
-                    "correct": "Share price multiplied by total number of shares outstanding",
-                    "explanation": "Market cap = share price × total shares outstanding, representing the company's total market value.",
-                },
-            ]
-
-            _quiz_score = 0
-            for _q_idx, _quiz_item in enumerate(_quiz_questions, start=1):
-                st.markdown(f"**Question {_q_idx}:** {_quiz_item['question']}")
-                _student_answer = st.radio(
-                    f"Select an answer for question {_q_idx}",
-                    options=_quiz_item["options"],
-                    index=None,
-                    key=f"student_quiz_q{_q_idx}",
-                    label_visibility="collapsed",
-                )
-                if _student_answer is not None:
-                    if _student_answer == _quiz_item["correct"]:
-                        _quiz_score += 1
-                        st.success(f"✅ Correct! {_quiz_item['explanation']}")
-                    else:
-                        st.error(f"❌ Not quite. {_quiz_item['explanation']}")
-                st.markdown("---")
-
-            st.markdown("#### Quiz Score:")
-            st.markdown(f"### {_quiz_score} / 5")
-        # ----- END NEW: QUICK QUIZ EXPANDER ----- #
-
-        # =============================================================== #
-        # NEW: TEACHER NOTES (LESSON PLAN) EXPANDER
-        # =============================================================== #
-        with st.expander("👨‍🏫 Teacher Notes", expanded=False):
-            st.markdown("**Recommended Grade:**")
-            st.markdown("9–12")
-
-            st.markdown("**Course:**")
-            st.markdown("Emerging Financial Markets")
-
-            st.markdown("**Estimated Lesson Time:**")
-            st.markdown("25–40 minutes")
-
-            st.markdown("**Learning Objectives:**")
-            st.markdown(
-                "- Interpret stock data\n"
-                "- Understand valuation metrics\n"
-                "- Compare companies\n"
-                "- Build investment reasoning"
-            )
-
-            st.markdown("**Homework:**")
-            st.markdown(
-                "Choose another publicly traded company and write a one-page investment "
-                "recommendation using at least five metrics from the app."
-            )
-        # ----- END NEW: TEACHER NOTES (LESSON PLAN) EXPANDER ----- #
-
-    # ----------------------------------------------------------------- #
-    # 📝 Classroom tab (Requirements 4 and 6)
-    # ----------------------------------------------------------------- #
-    with tab_classroom:
-        st.markdown(f"#### 📝 Classroom Tools: {company_name} ({symbol_input})")
-        st.caption(
-            "Predefined, ready-to-use classroom materials based on the selected company. "
-            "(Template-based for now — no AI/LLM generation.)"
-        )
-
-        classroom_col1, classroom_col2 = st.columns(2)
-
-        with classroom_col1:
-            if st.button("💬 Generate Discussion Questions", use_container_width=True, key="gen_discussion"):
-                st.session_state["classroom_output"] = ("Discussion Questions", generate_discussion_questions(company_name, symbol_input))
-            if st.button("📓 Generate Homework", use_container_width=True, key="gen_homework"):
-                st.session_state["classroom_output"] = ("Homework", generate_homework(company_name, symbol_input))
-            if st.button("📝 Generate Quiz", use_container_width=True, key="gen_quiz"):
-                st.session_state["classroom_output"] = ("Quiz", generate_quiz(company_name, symbol_input, info))
-            if st.button("🎟️ Generate Exit Ticket", use_container_width=True, key="gen_exit"):
-                st.session_state["classroom_output"] = ("Exit Ticket", generate_exit_ticket(company_name))
-
-        with classroom_col2:
-            if st.button("📖 Generate Vocabulary", use_container_width=True, key="gen_vocab"):
-                st.session_state["classroom_output"] = (
-                    "Vocabulary Assignment",
-                    generate_vocabulary_assignment(
-                        ["Market Capitalization", "P/E Ratio", "Revenue", "Net Margin", "ROE", "Free Cash Flow"]
-                    ),
-                )
-            if st.button("🧠 Generate Reflection Questions", use_container_width=True, key="gen_reflection"):
-                st.session_state["classroom_output"] = ("Reflection Questions", generate_reflection_questions(company_name, info))
-            if st.button("📂 Generate Case Study", use_container_width=True, key="gen_case_study"):
-                st.session_state["classroom_output"] = ("Case Study", generate_case_study(company_name, symbol_input, info))
-
-        st.divider()
-
-        if st.session_state.get("classroom_output"):
-            output_title, output_content = st.session_state["classroom_output"]
-            st.markdown(f"##### 📄 {output_title}")
-            if isinstance(output_content, list):
-                for _item in output_content:
-                    if isinstance(_item, dict):
-                        st.markdown(f"**Q:** {_item['question']}")
-                        st.caption(f"Suggested answer: {_item['answer']}")
-                    else:
-                        st.markdown(f"- {_item}")
-            else:
-                st.markdown(output_content)
-        else:
-            st.info("Click a button above to generate classroom material for this company.")
-
-        st.divider()
-
-        # ----- Teacher Notes (Requirement 6) ----- #
-        st.markdown("##### 🧑‍🏫 Teacher Notes")
-        st.caption("Notes are kept for this browser session only, using Streamlit session_state.")
-
-        if "teacher_notes" not in st.session_state:
-            st.session_state["teacher_notes"] = []
-
-        new_note = st.text_area("Write a note for this lesson", key="teacher_note_input")
-        if st.button("💾 Save Note", key="save_teacher_note"):
-            if new_note.strip():
-                st.session_state["teacher_notes"].append(
-                    {
-                        "symbol": symbol_input,
-                        "note": new_note.strip(),
-                        "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    }
-                )
-                st.toast("Note saved for this session.")
-            else:
-                st.warning("Please write a note before saving.")
-
-        if st.session_state["teacher_notes"]:
-            st.markdown("###### Saved Notes")
-            for _note in reversed(st.session_state["teacher_notes"]):
-                st.markdown(f"**[{_note['timestamp']}] {_note['symbol']}:** {_note['note']}")
-        else:
-            st.caption("No notes saved yet.")
-
-
-# --------------------------------------------------------------------------- #
-# Export tab
-# --------------------------------------------------------------------------- #
-
-with tab_export:
-    st.markdown("#### Export Research Report")
-    st.caption("Generate a downloadable PDF summary of the current ticker's key data and scores.")
-
-    if st.button("🧾 Generate PDF Report", type="primary"):
-        scores = {
-            "AI Investment Score": ai_investment_score(info, hist),
-            "Buffett Score": buffett_score(info),
-            "Graham Score": graham_score(info),
-            "Risk Score": risk_score(info, hist),
-        }
-        try:
-            pdf_bytes = build_pdf_report(symbol_input, info, scores)
-            st.download_button(
-                label="⬇️ Download PDF Report",
-                data=pdf_bytes,
-                file_name=f"{symbol_input}_research_report.pdf",
-                mime="application/pdf",
-            )
-            st.success("Report generated successfully.")
-        except Exception as exc:
-            st.error(f"Failed to generate PDF report: {exc}")
-
-    st.divider()
-    st.markdown("#### Export Data as CSV")
-    st.caption("Download the raw price history and key metrics for the current ticker.")
-
-    csv_col1, csv_col2 = st.columns(2)
-
-    with csv_col1:
-        if not hist.empty:
-            price_csv = hist.to_csv(index=True).encode("utf-8")
-            st.download_button(
-                label="⬇️ Download Price History (CSV)",
-                data=price_csv,
-                file_name=f"{symbol_input}_price_history.csv",
-                mime="text/csv",
-                key="download_price_csv",
-            )
-        else:
-            st.info("No price history available to export.")
-
-    with csv_col2:
-        metrics_row = {
-            "Symbol": symbol_input,
-            "Market Cap": info.get("marketCap"),
-            "Trailing P/E": info.get("trailingPE"),
-            "Forward P/E": info.get("forwardPE"),
-            "PEG Ratio": info.get("pegRatio"),
-            "ROE": info.get("returnOnEquity"),
-            "ROA": info.get("returnOnAssets"),
-            "Profit Margin": info.get("profitMargins"),
-            "Debt to Equity": info.get("debtToEquity"),
-            "Current Ratio": info.get("currentRatio"),
-            "Dividend Yield": info.get("dividendYield"),
-        }
-        metrics_csv = pd.DataFrame([metrics_row]).to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="⬇️ Download Key Metrics (CSV)",
-            data=metrics_csv,
-            file_name=f"{symbol_input}_key_metrics.csv",
-            mime="text/csv",
-            key="download_metrics_csv",
-        )
+pg.run()
