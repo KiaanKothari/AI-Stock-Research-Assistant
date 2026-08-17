@@ -51,6 +51,9 @@ def get_company_info(symbol: str) -> dict[str, Any]:
     Fetch company profile & key statistics.
 
     Returns an empty dict if the ticker is invalid or data is unavailable.
+    The actual exception (if any) is stashed in session_state for
+    diagnostics — see the "Data unavailable" banner in Section 8 — without
+    changing this function's return type for any of its existing callers.
     """
     try:
         ticker = yf.Ticker(symbol.strip().upper())
@@ -61,7 +64,11 @@ def get_company_info(symbol: str) -> dict[str, Any]:
         ) is None and info.get("previousClose") is None:
             return info if info else {}
         return info
-    except Exception:
+    except Exception as exc:
+        try:
+            st.session_state["_last_info_fetch_error"] = f"{type(exc).__name__}: {exc}"
+        except Exception:
+            pass  # session_state may be unavailable outside a script run (e.g. in tests)
         return {}
 
 
@@ -5240,6 +5247,33 @@ if not info and hist.empty:
         "Please check the symbol and try again."
     )
     st.stop()
+
+# ----- NEW: DIAGNOSTIC BANNER — surfaces the "price chart works but every -----
+# metric says N/A" failure mode, which happens when yfinance's `ticker.info`
+# call fails (a more fragile Yahoo Finance endpoint than price history) even
+# though price history itself succeeds. This is commonly caused by Yahoo
+# Finance rate-limiting or blocking shared cloud IPs (e.g. Streamlit
+# Community Cloud), not a bug in this app's logic.
+if not info:
+    _info_error = st.session_state.get("_last_info_fetch_error")
+    with st.container(border=True):
+        st.warning(
+            f"⚠️ Company profile and fundamentals data could not be loaded for "
+            f"**{symbol_input}**, so metrics on this and other pages will show "
+            f"**N/A**. Price history/charts may still work, since they come "
+            f"from a different data endpoint."
+        )
+        if _info_error:
+            st.caption(f"Underlying error: `{_info_error}`")
+        st.caption(
+            "This is most often Yahoo Finance rate-limiting or blocking "
+            "requests from a shared cloud IP address (common on Streamlit "
+            "Community Cloud), rather than a bug in the app itself. Try "
+            "again in a few minutes, or run the app locally to confirm — "
+            "if it works locally but not when deployed, that confirms an "
+            "IP/rate-limit issue rather than a code issue."
+        )
+# ----- END NEW: DIAGNOSTIC BANNER -----
 
 live = get_live_price(symbol_input)
 logo_url = get_logo_url(symbol_input, info.get("website"))
