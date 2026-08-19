@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import os  # ADDED FOR GA4: read GA_MEASUREMENT_ID from the environment
 import random  # ADDED FOR EDUCATION MODE: used for "Did You Know?" random facts
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
@@ -22,6 +23,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components  # ADDED FOR GA4: st.markdown() does not execute <script> tags, components.html() does
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -4988,6 +4990,53 @@ st.set_page_config(
 )
 
 init_state()
+
+# --------------------------------------------------------------------------- #
+# NEW: Google Analytics 4 (GA4) tracking
+# --------------------------------------------------------------------------- #
+# Placed immediately after init_state() so it runs on every single page
+# load/rerun, before any st.stop() calls further down (e.g. for an invalid
+# ticker) — every visit gets tracked, not just successful ones.
+#
+# Why components.html() and not st.markdown(): Streamlit's st.markdown()
+# inserts HTML via innerHTML, and browsers do NOT execute <script> tags
+# inserted that way. components.html() renders inside a real iframe, which
+# does execute scripts — it's the standard, safest way to run actual JS
+# inside a Streamlit app without touching the rest of the UI.
+#
+# Why guarded by session_state: Streamlit reruns this entire script on
+# every widget interaction (every click, every slider move). Without a
+# guard, the GA snippet would be re-injected — and gtag.js would send a
+# fresh page_view hit — on every single rerun, wildly inflating session
+# and pageview counts. Gating on session_state means the tracking snippet
+# is only ever injected once per browser session (a fresh page load /
+# new tab correctly starts a new session, which is the intended behavior).
+#
+# Privacy: this uses GA4's standard gtag.js snippet only — no user_id, no
+# custom PII fields, no form or email tracking. Google Analytics collects
+# its normal anonymous-by-default session/device/geo/referrer signals.
+GA_MEASUREMENT_ID = os.environ.get("GA_MEASUREMENT_ID")
+if GA_MEASUREMENT_ID and not st.session_state.get("_ga4_injected"):
+    components.html(
+        f"""
+        <script async src="https://www.googletagmanager.com/gtag/js?id={GA_MEASUREMENT_ID}"></script>
+        <script>
+          window.dataLayer = window.dataLayer || [];
+          function gtag() {{ dataLayer.push(arguments); }}
+          gtag('js', new Date());
+          gtag('config', '{GA_MEASUREMENT_ID}');
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+    st.session_state["_ga4_injected"] = True
+# If GA_MEASUREMENT_ID is unset (e.g. running locally, or the Render env
+# var hasn't been configured yet), the block above is simply skipped —
+# the app behaves exactly as it did before this change.
+# --------------------------------------------------------------------------- #
+# END NEW: Google Analytics 4 (GA4) tracking
+# --------------------------------------------------------------------------- #
 
 # --------------------------------------------------------------------------- #
 # Global styling — Bloomberg-inspired dark dashboard, dark-mode compatible
