@@ -5015,7 +5015,31 @@ init_state()
 # Privacy: this uses GA4's standard gtag.js snippet only — no user_id, no
 # custom PII fields, no form or email tracking. Google Analytics collects
 # its normal anonymous-by-default session/device/geo/referrer signals.
-GA_MEASUREMENT_ID = os.environ.get("GA_MEASUREMENT_ID")
+
+
+def _get_ga_measurement_id() -> Optional[str]:
+    """
+    Read the GA4 Measurement ID from Streamlit secrets first (the secure,
+    recommended store on Streamlit Community Cloud — set via
+    .streamlit/secrets.toml locally or the app's "Secrets" panel on
+    Community Cloud), falling back to an environment variable (e.g. on
+    Render, or any other host that isn't Streamlit-secrets-aware).
+
+    Returns None — never raises — if neither is configured, so callers can
+    gracefully skip GA4 injection instead of crashing the app.
+    """
+    try:
+        value = st.secrets.get("GA_MEASUREMENT_ID")
+        if value:
+            return value
+    except Exception:
+        # st.secrets raises if no secrets.toml exists at all (e.g. running
+        # locally without one) — that's expected and not an error here.
+        pass
+    return os.environ.get("GA_MEASUREMENT_ID")
+
+
+GA_MEASUREMENT_ID = _get_ga_measurement_id()
 if GA_MEASUREMENT_ID and not st.session_state.get("_ga4_injected"):
     components.html(
         f"""
@@ -5031,9 +5055,9 @@ if GA_MEASUREMENT_ID and not st.session_state.get("_ga4_injected"):
         width=0,
     )
     st.session_state["_ga4_injected"] = True
-# If GA_MEASUREMENT_ID is unset (e.g. running locally, or the Render env
-# var hasn't been configured yet), the block above is simply skipped —
-# the app behaves exactly as it did before this change.
+# If GA_MEASUREMENT_ID is unset in both Streamlit secrets and the
+# environment (e.g. running locally with neither configured), the block
+# above is simply skipped — the app behaves exactly as it did before.
 # --------------------------------------------------------------------------- #
 # END NEW: Google Analytics 4 (GA4) tracking
 # --------------------------------------------------------------------------- #
