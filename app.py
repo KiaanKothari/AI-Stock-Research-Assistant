@@ -2871,8 +2871,8 @@ def build_custom_css(theme_mode: str) -> str:
     }}
 
     .stApp {{
-        background-color: {bg_color};
-        color: {text_color};
+        background-color: {bg_color} !important;
+        color: {text_color} !important;
         font-size: 0.95rem;
         line-height: 1.55;
     }}
@@ -2882,18 +2882,46 @@ def build_custom_css(theme_mode: str) -> str:
         font-family: 'Inter', sans-serif !important;
         font-weight: 700;
         letter-spacing: -0.4px;
-        color: {text_color};
+        color: {text_color} !important;
     }}
     h1 {{ font-size: 1.65rem; }}
     h2 {{ font-size: 1.3rem; }}
     h3, h4 {{ font-size: 1.05rem; margin-top: 0.4rem; }}
     p, span, div, label {{ font-family: 'Inter', sans-serif; }}
 
+    /* ----- NEW: force text color everywhere (v2 — universal selector) ----- #
+       The previous attempt targeted specific Streamlit data-testid names,
+       which is fragile — those internal names vary by Streamlit version
+       and don't cover everything. This uses a true universal selector
+       scoped to the app root, so it catches every regular DOM element
+       regardless of what Streamlit calls it internally. Also targets
+       Streamlit's own CSS custom properties directly, since some of its
+       built-in components read color from those variables rather than
+       inheriting a plain `color` value. */
+    .stApp, .stApp * {{
+        color: {text_color} !important;
+    }}
+    :root, .stApp {{
+        --text-color: {text_color} !important;
+        --gray-70: {text_color} !important;
+        --gray-90: {text_color} !important;
+    }}
+
+    /* Captions, help text, and disabled/placeholder text stay in the muted
+       color, applied AFTER the universal rule above so it wins for these
+       specific elements without needing to touch every other selector. */
+    [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] *,
+    .stApp small, .stApp small *, ::placeholder {{
+        color: {muted_text_color} !important;
+    }}
+    /* ----- END NEW: force text color everywhere ----- #
+
     /* Numeric data gets the monospace utility face — metrics, dataframes */
     div[data-testid="stMetricValue"] {{
         font-family: 'JetBrains Mono', monospace !important;
         font-weight: 700;
         letter-spacing: -0.5px;
+        color: {text_color} !important;
     }}
     div[data-testid="stMetricDelta"] {{
         font-family: 'JetBrains Mono', monospace !important;
@@ -2905,7 +2933,7 @@ def build_custom_css(theme_mode: str) -> str:
 
     /* Metric cards */
     div[data-testid="stMetric"] {{
-        background-color: {metric_bg};
+        background-color: {metric_bg} !important;
         border: 1px solid {metric_border};
         border-radius: 10px;
         padding: 14px 16px 10px 16px;
@@ -2913,7 +2941,7 @@ def build_custom_css(theme_mode: str) -> str:
     div[data-testid="stMetricLabel"] {{
         font-size: 0.75rem;
         font-weight: 500;
-        color: {muted_text_color};
+        color: {muted_text_color} !important;
         text-transform: uppercase;
         letter-spacing: 0.4px;
         opacity: 1;
@@ -2921,7 +2949,7 @@ def build_custom_css(theme_mode: str) -> str:
 
     /* Sidebar */
     section[data-testid="stSidebar"] {{
-        background-color: {surface_color};
+        background-color: {surface_color} !important;
         border-right: 1px solid {divider_color};
     }}
 
@@ -2939,15 +2967,15 @@ def build_custom_css(theme_mode: str) -> str:
         padding: 8px 14px;
         font-weight: 600;
         font-size: 0.88rem;
-        color: {muted_text_color};
+        color: {muted_text_color} !important;
         transition: background-color 0.15s ease, color 0.15s ease;
     }}
     .stTabs [data-baseweb="tab"]:hover {{
-        background-color: {tab_active_bg};
-        color: {text_color};
+        background-color: {tab_active_bg} !important;
+        color: {text_color} !important;
     }}
     .stTabs [aria-selected="true"] {{
-        background-color: {tab_active_bg};
+        background-color: {tab_active_bg} !important;
         color: {accent} !important;
         border-bottom: 2px solid {accent};
     }}
@@ -2960,13 +2988,13 @@ def build_custom_css(theme_mode: str) -> str:
     }}
 
     /* Dividers: quieter than Streamlit's default */
-    hr {{ border-color: {divider_color}; }}
+    hr {{ border-color: {divider_color} !important; }}
 
     /* Ticker badge */
     .ticker-badge {{
         display: inline-block;
         background: linear-gradient(135deg, #F5A623, #F76B1C);
-        color: #111;
+        color: #111 !important;
         font-weight: 700;
         padding: 4px 12px;
         border-radius: 999px;
@@ -2974,8 +3002,8 @@ def build_custom_css(theme_mode: str) -> str:
         letter-spacing: 0.5px;
     }}
 
-    .price-up {{ color: #00C805; font-weight: 700; font-family: 'JetBrains Mono', monospace; }}
-    .price-down {{ color: #FF3B30; font-weight: 700; font-family: 'JetBrains Mono', monospace; }}
+    .price-up {{ color: #00C805 !important; font-weight: 700; font-family: 'JetBrains Mono', monospace; }}
+    .price-down {{ color: #FF3B30 !important; font-weight: 700; font-family: 'JetBrains Mono', monospace; }}
 
     footer {{ visibility: hidden; }}
 </style>
@@ -3448,13 +3476,13 @@ def _dcf_kpi_card(icon, icon_bg, label, value, value_color, subtext, subtext_col
     <div style="background:{card_bg}; border:1px solid {card_border}; border-radius:12px;
                 padding:16px 18px; height:132px; display:flex; flex-direction:column; justify-content:space-between;">
         <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-            <span style="color:{muted}; font-size:0.76rem; font-weight:600;">{label}</span>
+            <span style="color:{muted} !important; font-size:0.76rem; font-weight:600;">{label}</span>
             <span style="background:{icon_bg}; min-width:28px; height:28px; border-radius:50%;
                          display:flex; align-items:center; justify-content:center; font-size:0.85rem;">{icon}</span>
         </div>
         <div>
-            <div style="font-family:'JetBrains Mono',monospace; font-size:1.5rem; font-weight:700; color:{value_color};">{value}</div>
-            <div style="color:{subtext_color}; font-size:0.78rem; margin-top:2px;">{subtext}</div>
+            <div style="font-family:'JetBrains Mono',monospace; font-size:1.5rem; font-weight:700; color:{value_color} !important;">{value}</div>
+            <div style="color:{subtext_color} !important; font-size:0.78rem; margin-top:2px;">{subtext}</div>
         </div>
     </div>
     """
@@ -3467,11 +3495,11 @@ def _dcf_scenario_card(emoji, label, label_color, header_bg, tg_pct, wacc_pct, v
                 padding:18px; text-align:center;">
         <div style="width:44px; height:44px; border-radius:50%; background:{header_bg};
                     display:flex; align-items:center; justify-content:center; font-size:1.3rem; margin:0 auto 10px auto;">{emoji}</div>
-        <div style="color:{label_color}; font-weight:700; font-size:0.98rem;">{label}</div>
-        <div style="color:{muted}; font-size:0.76rem; margin-top:8px;">Terminal Growth: {tg_pct}</div>
-        <div style="color:{muted}; font-size:0.76rem;">WACC: {wacc_pct}</div>
-        <div style="font-family:'JetBrains Mono',monospace; font-size:1.6rem; font-weight:800; color:{label_color}; margin-top:10px;">{value}</div>
-        <div style="color:{upside_color}; font-size:0.8rem; font-weight:600; margin-top:4px;">{upside_text}</div>
+        <div style="color:{label_color} !important; font-weight:700; font-size:0.98rem;">{label}</div>
+        <div style="color:{muted} !important; font-size:0.76rem; margin-top:8px;">Terminal Growth: {tg_pct}</div>
+        <div style="color:{muted} !important; font-size:0.76rem;">WACC: {wacc_pct}</div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:1.6rem; font-weight:800; color:{label_color} !important; margin-top:10px;">{value}</div>
+        <div style="color:{upside_color} !important; font-size:0.8rem; font-weight:600; margin-top:4px;">{upside_text}</div>
     </div>
     """
 
@@ -3517,8 +3545,8 @@ def _dcf_price_range_bar(bear_val, current_val, base_val, bull_val, muted):
         p = pos(val)
         labels_html += (
             f'<div style="position:absolute; left:{p}%; transform:translateX(-50%); text-align:center; top:-48px; white-space:nowrap;">'
-            f'<div style="font-family:\'JetBrains Mono\',monospace; font-weight:700; color:{color}; font-size:0.85rem;">${val:,.2f}</div>'
-            f'<div style="color:{muted}; font-size:0.68rem;">{label}</div>'
+            f'<div style="font-family:\'JetBrains Mono\',monospace; font-weight:700; color:{color} !important; font-size:0.85rem;">${val:,.2f}</div>'
+            f'<div style="color:{muted} !important; font-size:0.68rem;">{label}</div>'
             f"</div>"
         )
         ticks_html += (
@@ -3548,7 +3576,7 @@ def render_dcf_valuation_page() -> None:
     check_dcf_suitability, generate_dcf_narrative — see SECTION 5B above).
     Only the presentation layer changed here.
     """
-    _dcf_theme = st.session_state.get("theme_mode_toggle", "Dark")
+    _dcf_theme = st.session_state.get("theme_mode_toggle", "Light")
     if _dcf_theme == "Light":
         card_bg, card_border, muted = "#F7F8FA", "rgba(0,0,0,0.10)", "#5B6472"
     else:
@@ -3560,10 +3588,10 @@ def render_dcf_valuation_page() -> None:
             f"""
             <div style="display:flex; align-items:baseline; gap:10px;">
                 <span style="font-size:1.5rem; font-weight:800;">DCF Valuation</span>
-                <span style="background:rgba(0,200,5,0.15); color:#00C805; padding:2px 10px;
+                <span style="background:rgba(0,200,5,0.15); color:#00C805 !important; padding:2px 10px;
                              border-radius:999px; font-size:0.68rem; font-weight:700;">BETA</span>
             </div>
-            <p style="color:{muted}; margin-top:2px; margin-bottom:0;">
+            <p style="color:{muted} !important; margin-top:2px; margin-bottom:0;">
                 Intrinsic value estimation using Discounted Cash Flow analysis
             </p>
             """,
@@ -3833,8 +3861,8 @@ def render_dcf_valuation_page() -> None:
                 </div>
             </div>
             <div style="margin-top:12px; border:1px solid {card_border}; border-radius:10px; padding:10px 14px;">
-                <div style="color:{muted}; font-size:0.76rem;">Equity Value</div>
-                <div style="font-family:'JetBrains Mono',monospace; font-size:1.4rem; font-weight:800; color:#3DDC63;">{fmt_large_number(base_result.equity_value)}</div>
+                <div style="color:{muted} !important; font-size:0.76rem;">Equity Value</div>
+                <div style="font-family:'JetBrains Mono',monospace; font-size:1.4rem; font-weight:800; color:#3DDC63 !important;">{fmt_large_number(base_result.equity_value)}</div>
             </div>
             </div>
             """,
@@ -3888,7 +3916,7 @@ def render_dcf_valuation_page() -> None:
             )
         if current_price:
             st.markdown(
-                f'<p style="text-align:center; color:{muted}; font-size:0.78rem; margin-top:8px;">vs. Current Price: ${current_price:,.2f}</p>',
+                f'<p style="text-align:center; color:{muted} !important; font-size:0.78rem; margin-top:8px;">vs. Current Price: ${current_price:,.2f}</p>',
                 unsafe_allow_html=True,
             )
 
@@ -3909,7 +3937,7 @@ def render_dcf_valuation_page() -> None:
         lo_val, hi_val = (min(flat_values), max(flat_values)) if flat_values else (0, 1)
 
         header_cells = "".join(
-            f'<th style="padding:6px 8px; font-size:0.75rem; color:{muted}; font-weight:600;">{t:.1%}</th>'
+            f'<th style="padding:6px 8px; font-size:0.75rem; color:{muted} !important; font-weight:600;">{t:.1%}</th>'
             for t in tg_range
         )
         base_tg_col_idx = min(range(len(tg_range)), key=lambda i: abs(tg_range[i] - terminal_growth_input))
@@ -3928,14 +3956,14 @@ def render_dcf_valuation_page() -> None:
                     f'{f"${v:,.0f}" if v is not None else "N/A"}</td>'
                 )
             rows_html += (
-                f'<tr><td style="color:{muted}; font-size:0.75rem; padding:6px 8px; font-weight:600;">{w:.2%}</td>{cells}</tr>'
+                f'<tr><td style="color:{muted} !important; font-size:0.75rem; padding:6px 8px; font-weight:600;">{w:.2%}</td>{cells}</tr>'
             )
 
         st.markdown(
             f"""
             <div style="background:{card_bg}; border:1px solid {card_border}; border-radius:12px; padding:16px; overflow-x:auto;">
                 <table style="border-collapse:separate; border-spacing:3px; width:100%;">
-                    <tr><th style="color:{muted}; font-size:0.72rem;">WACC ↓ / TG →</th>{header_cells}</tr>
+                    <tr><th style="color:{muted} !important; font-size:0.72rem;">WACC ↓ / TG →</th>{header_cells}</tr>
                     {rows_html}
                 </table>
             </div>
@@ -4969,7 +4997,7 @@ init_state()
 # Reads the persisted theme choice (set by the sidebar widget below) before
 # the widget itself is re-instantiated later in this run, so the CSS for
 # the correct theme is applied immediately.
-_theme_mode = st.session_state.get("theme_mode_toggle", "Dark")
+_theme_mode = st.session_state.get("theme_mode_toggle", "Light")
 CUSTOM_CSS = build_custom_css(_theme_mode)
 # ----- END NEW: DARK/LIGHT THEME TOGGLE -----
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
