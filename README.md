@@ -1,4 +1,4 @@
-🚀 **[Try the Live App](https://ai-stock-research-assistant-zkzg.onrender.com)**
+🚀 **[Try the Live App](https://ai-stock-research-kiaan.streamlit.app/)**
 # 📈 AI Stock Research Assistant [RELEASE v1.4.0-beta.1 - DCF Valuation BETA]
 
 An AI-powered stock research platform built with **Python, Streamlit, Plotly, and yfinance**, combining financial data, technical analysis, fundamental analysis, transparent rule-based scoring, portfolio tools, backtesting, and an interactive **DCF valuation model**.
