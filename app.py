@@ -5075,6 +5075,23 @@ CUSTOM_CSS = build_custom_css(_theme_mode)
 # ----- END NEW: DARK/LIGHT THEME TOGGLE -----
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
+# ----- NEW: "Clone this app" banner ----- #
+# Small, unobtrusive link at the very top of the main content area —
+# purely additive, doesn't touch the sidebar, header, or any page content.
+st.markdown(
+    """
+    <div style="text-align:center; padding: 4px 0 10px 0; font-size: 0.82rem;">
+        ⭐ Like this project?
+        <a href="https://github.com/KiaanKothari/AI-Stock-Research-Assistant"
+           target="_blank" rel="noopener noreferrer">
+            Clone it for yourself on GitHub
+        </a>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+# ----- END NEW: "Clone this app" banner ----- #
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
