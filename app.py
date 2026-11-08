@@ -467,15 +467,21 @@ COLOR_SMA20 = "#4FC3F7"
 COLOR_SMA50 = "#FFB74D"
 COLOR_SMA200 = "#CE93D8"
 COLOR_BAND = "rgba(120,120,255,0.15)"
+COLOR_BAND_LINE = "rgba(150,150,255,0.6)"
+COLOR_HOVER_BG = "#162133"
+CHART_FONT = "Schibsted Grotesk, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+# UI REDESIGN (v2.0): the values above are defaults only — apply_chart_palette()
+# (SECTION 7C) re-points them at the active Dark/Light theme on every run.
 
 
 def _base_layout(fig: go.Figure, title: str = "", height: int = 450) -> go.Figure:
     """Apply consistent, professional dashboard styling to any figure."""
     fig.update_layout(
-        title=dict(text=title, font=dict(size=16, color=COLOR_TEXT)),
+        title=dict(text=title, font=dict(size=14, color=COLOR_TEXT, family=CHART_FONT), x=0.01, xanchor="left"),
         paper_bgcolor=COLOR_BG,
         plot_bgcolor=COLOR_BG,
-        font=dict(color=COLOR_TEXT, size=12),
+        font=dict(color=COLOR_TEXT, size=12, family=CHART_FONT),
+        hoverlabel=dict(bgcolor=COLOR_HOVER_BG, bordercolor=COLOR_GRID, font=dict(family=CHART_FONT, color=COLOR_TEXT)),
         margin=dict(l=40, r=20, t=50 if title else 20, b=30),
         height=height,
         legend=dict(
@@ -485,9 +491,12 @@ def _base_layout(fig: go.Figure, title: str = "", height: int = 450) -> go.Figur
             xanchor="right",
             x=1,
             bgcolor="rgba(0,0,0,0)",
+            font=dict(color=COLOR_TEXT, family=CHART_FONT),
         ),
-        xaxis=dict(gridcolor=COLOR_GRID, showgrid=True, rangeslider=dict(visible=False)),
-        yaxis=dict(gridcolor=COLOR_GRID, showgrid=True),
+        xaxis=dict(gridcolor=COLOR_GRID, showgrid=True, zeroline=False, linecolor=COLOR_GRID,
+                   tickfont=dict(color=COLOR_TEXT), rangeslider=dict(visible=False)),
+        yaxis=dict(gridcolor=COLOR_GRID, showgrid=True, zeroline=False, linecolor=COLOR_GRID,
+                   tickfont=dict(color=COLOR_TEXT)),
         hovermode="x unified",
     )
     return fig
@@ -546,13 +555,13 @@ def candlestick_chart(
         fig.add_trace(
             go.Scatter(
                 x=df.index, y=bands["Upper"], name="Bollinger Upper",
-                line=dict(color="rgba(150,150,255,0.6)", width=1, dash="dot"),
+                line=dict(color=COLOR_BAND_LINE, width=1, dash="dot"),
             )
         )
         fig.add_trace(
             go.Scatter(
                 x=df.index, y=bands["Lower"], name="Bollinger Lower",
-                line=dict(color="rgba(150,150,255,0.6)", width=1, dash="dot"),
+                line=dict(color=COLOR_BAND_LINE, width=1, dash="dot"),
                 fill="tonexty", fillcolor=COLOR_BAND,
             )
         )
@@ -667,7 +676,8 @@ def earnings_chart(earnings_df: pd.DataFrame) -> go.Figure:
 def comparison_chart(price_histories: dict[str, pd.DataFrame]) -> go.Figure:
     """Normalized (% return) comparison chart across multiple tickers."""
     fig = go.Figure()
-    palette = [COLOR_SMA20, COLOR_ACCENT, COLOR_UP, COLOR_DOWN, COLOR_SMA200, "#90CAF9"]
+    # Up/down colors are reserved for price direction, so series use neutral hues.
+    palette = [COLOR_SMA20, COLOR_ACCENT, COLOR_SMA200, "#4FB6B2", "#E58A5B", "#90A4C9"]
 
     for i, (symbol, df) in enumerate(price_histories.items()):
         if df.empty:
@@ -713,7 +723,8 @@ def gauge_chart(score: float, title: str, max_value: int = 100) -> go.Figure:
         )
     )
     fig.update_layout(
-        paper_bgcolor=COLOR_BG, height=220, margin=dict(l=20, r=20, t=40, b=10)
+        paper_bgcolor=COLOR_BG, height=220, margin=dict(l=20, r=20, t=40, b=10),
+        font=dict(family=CHART_FONT, color=COLOR_TEXT),
     )
     return fig
 
@@ -2831,185 +2842,452 @@ def backtest_equity_chart(equity_df: pd.DataFrame, symbol: str) -> go.Figure:
 # 7C.5 — Dark / Light Theme Toggle
 # --------------------------------------------------------------------------- #
 
+# ----- UI REDESIGN (v2.0): "Ledger" design system ----- #
+# Every color in the app comes from one of these two token sets, so the CSS,
+# the Plotly charts, the hero header and the DCF cards all switch together
+# when the sidebar theme toggle changes.
+THEME_TOKENS: dict[str, dict[str, str]] = {
+    "Dark": {
+        "bg": "#0F1724",          # ink navy page
+        "surface": "#162133",     # cards, sidebar
+        "raised": "#1C2940",      # inputs, hover, active nav
+        "line": "#26354F",        # hairlines and borders
+        "text": "#E6ECF5",
+        "muted": "#8D9BB3",
+        "accent": "#D8B15A",      # certificate brass
+        "accent_soft": "rgba(216, 177, 90, 0.14)",
+        "on_accent": "#1A1405",
+        "up": "#3CCB8E",
+        "down": "#F0616D",
+        "up_soft": "rgba(60, 203, 142, 0.14)",
+        "down_soft": "rgba(240, 97, 109, 0.14)",
+        "grid": "rgba(141, 155, 179, 0.14)",
+        "series_1": "#6FA8FF",
+        "series_2": "#D8B15A",
+        "series_3": "#B48CFF",
+        "band": "rgba(111, 168, 255, 0.10)",
+        "band_line": "rgba(111, 168, 255, 0.55)",
+        "shadow": "0 1px 0 rgba(255,255,255,0.03) inset, 0 12px 32px -18px rgba(0,0,0,0.6)",
+    },
+    "Light": {
+        "bg": "#EEF2F7",          # cool paper page
+        "surface": "#FFFFFF",
+        "raised": "#F4F7FB",
+        "line": "#D6DEE9",
+        "text": "#13213A",        # ink
+        "muted": "#5A6B85",
+        "accent": "#8A6518",      # deeper brass for contrast on white
+        "accent_soft": "rgba(138, 101, 24, 0.10)",
+        "on_accent": "#FFFFFF",
+        "up": "#0F8A5F",
+        "down": "#C93545",
+        "up_soft": "rgba(15, 138, 95, 0.10)",
+        "down_soft": "rgba(201, 53, 69, 0.10)",
+        "grid": "rgba(19, 33, 58, 0.08)",
+        "series_1": "#2F6BD8",
+        "series_2": "#B0841F",
+        "series_3": "#7A4FD0",
+        "band": "rgba(47, 107, 216, 0.08)",
+        "band_line": "rgba(47, 107, 216, 0.5)",
+        "shadow": "0 1px 2px rgba(19,33,58,0.04), 0 10px 28px -20px rgba(19,33,58,0.35)",
+    },
+}
+
+UI_FONT = "'Schibsted Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+
+
+def get_theme_tokens(theme_mode: str) -> dict[str, str]:
+    """Return the color tokens for 'Dark' or 'Light' (falls back to Dark)."""
+    return THEME_TOKENS.get(theme_mode, THEME_TOKENS["Dark"])
+
+
+def _tk(name: str) -> str:
+    """Token lookup for the active theme (used by inline-styled HTML cards)."""
+    return get_theme_tokens(globals().get("_theme_mode", "Dark"))[name]
+
+
+def apply_chart_palette(theme_mode: str) -> None:
+    """
+    Point the Plotly palette globals (SECTION 3) at the active theme. The
+    chart builders read these module-level names at call time, so setting
+    them once per run, before any page renders, re-themes every chart —
+    including fixing chart text that used to stay light grey in Light mode.
+    """
+    global COLOR_UP, COLOR_DOWN, COLOR_GRID, COLOR_TEXT, COLOR_ACCENT
+    global COLOR_SMA20, COLOR_SMA50, COLOR_SMA200, COLOR_BAND, COLOR_BAND_LINE, COLOR_HOVER_BG
+    t = get_theme_tokens(theme_mode)
+    COLOR_UP, COLOR_DOWN = t["up"], t["down"]
+    COLOR_GRID, COLOR_TEXT, COLOR_ACCENT = t["grid"], t["muted"], t["accent"]
+    COLOR_SMA20, COLOR_SMA50, COLOR_SMA200 = t["series_1"], t["series_2"], t["series_3"]
+    COLOR_BAND, COLOR_BAND_LINE = t["band"], t["band_line"]
+    COLOR_HOVER_BG = t["surface"]
+
+
 def build_custom_css(theme_mode: str) -> str:
     """
-    Return the app's custom CSS, adapted for the selected theme mode.
+    Return the app's CSS for the selected theme.
 
-    Typography: Inter (a highly legible, professional UI/display face used
-    by Stripe, Linear, and most modern fintech products) for all headings
-    and body text, paired with JetBrains Mono — a monospace face — for
-    numeric data specifically (metric values, dataframes). Real trading
-    terminals set figures in monospace so digits align in a fixed-width
-    grid; that convention is deliberately carried through here rather than
-    leaving every number in the same proportional font as the prose.
+    Design notes ("Ledger", v2.0): ink-navy or cool-paper ground, brass as
+    the single accent, Schibsted Grotesk for all text with tabular figures so
+    columns of numbers align. Up/down colors are reserved for price movement
+    and never used decoratively. Labels are sentence case.
     """
-    if theme_mode == "Light":
-        bg_color = "#FFFFFF"
-        surface_color = "#F7F8FA"
-        text_color = "#1A1A1A"
-        muted_text_color = "#5B6472"
-        metric_bg = "rgba(0, 0, 0, 0.03)"
-        metric_border = "rgba(0, 0, 0, 0.10)"
-        tab_active_bg = "rgba(0, 0, 0, 0.05)"
-        divider_color = "rgba(0, 0, 0, 0.08)"
-    else:
-        bg_color = "#0E1117"
-        surface_color = "#161B22"
-        text_color = "#E6E8EB"
-        muted_text_color = "#9AA4B2"
-        metric_bg = "rgba(127, 127, 127, 0.08)"
-        metric_border = "rgba(127, 127, 127, 0.16)"
-        tab_active_bg = "rgba(245, 166, 35, 0.10)"
-        divider_color = "rgba(255, 255, 255, 0.08)"
-
-    accent = "#F5A623"
+    t = get_theme_tokens(theme_mode)
+    bg, surface, raised, line = t["bg"], t["surface"], t["raised"], t["line"]
+    text, muted, accent, accent_soft = t["text"], t["muted"], t["accent"], t["accent_soft"]
+    on_accent, up, down = t["on_accent"], t["up"], t["down"]
+    up_soft, down_soft, shadow = t["up_soft"], t["down_soft"], t["shadow"]
+    font = UI_FONT
 
     return f"""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400..900;1,400..900&display=swap');
 
-    html, body, .stApp, [class*="css"] {{
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+    :root {{
+        --ledger-bg: {bg}; --ledger-surface: {surface}; --ledger-raised: {raised};
+        --ledger-line: {line}; --ledger-text: {text}; --ledger-muted: {muted};
+        --ledger-accent: {accent}; --ledger-up: {up}; --ledger-down: {down};
+    }}
+
+    html, body, .stApp, [class*="css"], button, input, textarea, select {{
+        font-family: {font} !important;
+        font-feature-settings: "tnum" 1, "lnum" 1;
+    }}
+    /* Keep Streamlit's icon font for expander chevrons, nav arrows etc. */
+    [data-testid="stIconMaterial"], .material-symbols-rounded,
+    span[class*="material-symbols"] {{
+        font-family: 'Material Symbols Rounded' !important;
+        font-feature-settings: normal !important;
     }}
 
     .stApp {{
-        background-color: {bg_color} !important;
-        color: {text_color} !important;
+        background: {bg} !important;
+        color: {text} !important;
         font-size: 0.95rem;
         line-height: 1.55;
     }}
 
-    /* Headings: tighter tracking, heavier weight, clear hierarchy */
-    h1, h2, h3, h4 {{
-        font-family: 'Inter', sans-serif !important;
-        font-weight: 700;
-        letter-spacing: -0.4px;
-        color: {text_color} !important;
-    }}
-    h1 {{ font-size: 1.65rem; }}
-    h2 {{ font-size: 1.3rem; }}
-    h3, h4 {{ font-size: 1.05rem; margin-top: 0.4rem; }}
-    p, span, div, label {{ font-family: 'Inter', sans-serif; }}
-
-    /* ----- NEW: force text color everywhere (v2 — universal selector) ----- #
-       The previous attempt targeted specific Streamlit data-testid names,
-       which is fragile — those internal names vary by Streamlit version
-       and don't cover everything. This uses a true universal selector
-       scoped to the app root, so it catches every regular DOM element
-       regardless of what Streamlit calls it internally. Also targets
-       Streamlit's own CSS custom properties directly, since some of its
-       built-in components read color from those variables rather than
-       inheriting a plain `color` value. */
-    .stApp, .stApp * {{
-        color: {text_color} !important;
-    }}
+    /* Force readable text everywhere (kept from v1 — Streamlit internals vary
+       by version, a scoped universal selector is the robust option). */
+    .stApp, .stApp * {{ color: {text} !important; }}
     :root, .stApp {{
-        --text-color: {text_color} !important;
-        --gray-70: {text_color} !important;
-        --gray-90: {text_color} !important;
+        --text-color: {text} !important;
+        --gray-70: {text} !important;
+        --gray-90: {text} !important;
     }}
-
-    /* Captions, help text, and disabled/placeholder text stay in the muted
-       color, applied AFTER the universal rule above so it wins for these
-       specific elements without needing to touch every other selector. */
     [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] *,
     .stApp small, .stApp small *, ::placeholder {{
-        color: {muted_text_color} !important;
+        color: {muted} !important;
     }}
-    /* ----- END NEW: force text color everywhere ----- #
 
-    /* Numeric data gets the monospace utility face — metrics, dataframes */
-    div[data-testid="stMetricValue"] {{
-        font-family: 'JetBrains Mono', monospace !important;
+    /* ---------- Layout ---------- */
+    .block-container, [data-testid="stMainBlockContainer"] {{
+        max-width: 1320px;
+        padding-top: 4.25rem !important;
+        padding-bottom: 4rem !important;
+    }}
+
+    /* ---------- Type scale ---------- */
+    h1, h2, h3, h4, h5 {{
+        font-family: {font} !important;
+        color: {text} !important;
+        letter-spacing: -0.015em;
         font-weight: 700;
-        letter-spacing: -0.5px;
-        color: {text_color} !important;
     }}
-    div[data-testid="stMetricDelta"] {{
-        font-family: 'JetBrains Mono', monospace !important;
+    .stApp h1 {{ font-size: 1.9rem !important; font-weight: 800; letter-spacing: -0.025em; }}
+    .stApp h2 {{ font-size: 1.45rem !important; }}
+    .stApp h3 {{ font-size: 1.2rem !important; }}
+    .stApp h4 {{ font-size: 1.12rem !important; font-weight: 700; margin: 1.5rem 0 0.35rem 0 !important; padding: 0 !important; }}
+    .stApp h5 {{ font-size: 0.98rem !important; font-weight: 650; padding: 0.4rem 0 0.2rem 0 !important; }}
+    .stApp a, .stApp a * {{ color: {accent} !important; text-decoration-color: {accent_soft}; text-underline-offset: 3px; }}
+
+    /* ---------- Top navigation bar ---------- */
+    header[data-testid="stHeader"] {{
+        background: {bg}E6 !important;
+        backdrop-filter: saturate(140%) blur(10px);
+        -webkit-backdrop-filter: saturate(140%) blur(10px);
+        border-bottom: 1px solid {line};
+        height: 3.25rem;
     }}
-    .stDataFrame, .stDataFrame [class*="glide"] {{
-        font-family: 'JetBrains Mono', monospace !important;
-        font-size: 0.85rem !important;
+    header[data-testid="stHeader"] a, header[data-testid="stHeader"] button {{
+        font-weight: 600 !important;
+        font-size: 0.9rem !important;
+        border-radius: 8px !important;
+    }}
+    header[data-testid="stHeader"] a[aria-current="page"],
+    header[data-testid="stHeader"] [aria-current="page"] {{
+        background: {accent_soft} !important;
+    }}
+    header[data-testid="stHeader"] a[aria-current="page"] * {{ color: {accent} !important; }}
+    [data-testid="stToolbar"] button {{ color: {muted} !important; }}
+
+    /* Dropdown menus & popovers (nav sections, selectboxes, tooltips) are
+       rendered outside the page tree, so they get explicit colors. */
+    [data-baseweb="popover"] > div, [data-baseweb="popover"] ul,
+    [data-baseweb="menu"], div[role="listbox"], [data-testid="stTooltipContent"] {{
+        background: {surface} !important;
+        border: 1px solid {line} !important;
+        border-radius: 10px !important;
+        box-shadow: {shadow} !important;
+    }}
+    [data-baseweb="popover"] *, [data-baseweb="menu"] *, div[role="listbox"] * {{
+        color: {text} !important;
+    }}
+    [data-baseweb="popover"] li:hover, [data-baseweb="popover"] li[aria-selected="true"],
+    [data-baseweb="popover"] a:hover {{
+        background: {raised} !important;
     }}
 
-    /* Metric cards */
-    div[data-testid="stMetric"] {{
-        background-color: {metric_bg} !important;
-        border: 1px solid {metric_border};
-        border-radius: 10px;
-        padding: 14px 16px 10px 16px;
-    }}
-    div[data-testid="stMetricLabel"] {{
-        font-size: 0.75rem;
-        font-weight: 500;
-        color: {muted_text_color} !important;
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
-        opacity: 1;
-    }}
-
-    /* Sidebar */
+    /* ---------- Sidebar: settings panel ---------- */
     section[data-testid="stSidebar"] {{
-        background-color: {surface_color} !important;
-        border-right: 1px solid {divider_color};
+        background: {surface} !important;
+        border-right: 1px solid {line};
+    }}
+    section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{ padding-top: 1rem; }}
+    section[data-testid="stSidebar"] hr {{ margin: 1rem 0 !important; }}
+    section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] label * {{
+        font-size: 0.82rem !important;
+        font-weight: 600 !important;
+        color: {muted} !important;
+    }}
+    .ledger-brand {{ display: flex; align-items: center; gap: 12px; margin: 0 0 1.1rem 0; }}
+    .ledger-brand svg {{ flex: none; }}
+    .stApp .ledger-brand-name {{ font-weight: 800; font-size: 1.08rem; letter-spacing: -0.02em; line-height: 1.15; }}
+    .stApp .ledger-brand-tag {{ color: {muted} !important; font-size: 0.78rem; line-height: 1.3; }}
+    .stApp .ledger-side-heading {{
+        color: {muted} !important; font-size: 0.78rem; font-weight: 700;
+        margin: 0.2rem 0 0.35rem 0;
     }}
 
-    /* Tabs — wrap onto multiple rows instead of forcing a horizontal
-       scrollbar, and give the active tab a clear, quiet indicator rather
-       than a loud full-background highlight. */
+    /* ---------- Inputs ---------- */
+    [data-baseweb="input"], [data-baseweb="base-input"], [data-baseweb="select"] > div,
+    [data-baseweb="textarea"], .stNumberInput [data-baseweb="input"] {{
+        background: {raised} !important;
+        border-color: {line} !important;
+        border-radius: 9px !important;
+    }}
+    [data-baseweb="input"] input, [data-baseweb="textarea"] textarea {{ background: transparent !important; }}
+    [data-baseweb="input"]:focus-within, [data-baseweb="select"] > div:focus-within {{
+        border-color: {accent} !important;
+        box-shadow: 0 0 0 3px {accent_soft} !important;
+    }}
+    /* The ticker field is the main control, so it reads larger. */
+    .st-key-ticker_symbol_input input {{
+        font-size: 1.15rem !important; font-weight: 800 !important; letter-spacing: 0.04em;
+        padding-top: 0.55rem !important; padding-bottom: 0.55rem !important;
+    }}
+
+    /* ---------- Buttons ---------- */
+    .stButton button, .stDownloadButton button, .stFormSubmitButton button {{
+        border-radius: 9px !important;
+        font-weight: 650 !important;
+        font-size: 0.88rem !important;
+        background: {raised} !important;
+        border: 1px solid {line} !important;
+        transition: border-color .15s ease, background-color .15s ease;
+    }}
+    .stButton button:hover, .stDownloadButton button:hover, .stFormSubmitButton button:hover {{
+        border-color: {accent} !important;
+    }}
+    .stButton button[kind="primary"], .stDownloadButton button[kind="primary"],
+    .stFormSubmitButton button[kind="primary"] {{
+        background: {accent} !important; border-color: {accent} !important;
+    }}
+    .stButton button[kind="primary"] *, .stDownloadButton button[kind="primary"] *,
+    .stFormSubmitButton button[kind="primary"] * {{ color: {on_accent} !important; }}
+    button:focus-visible, a:focus-visible, [role="tab"]:focus-visible {{
+        outline: 2px solid {accent} !important; outline-offset: 2px;
+    }}
+
+    /* ---------- Metrics ---------- */
+    div[data-testid="stMetric"] {{
+        background: {surface} !important;
+        border: 1px solid {line};
+        border-radius: 12px;
+        padding: 14px 16px 12px 16px;
+        box-shadow: {shadow};
+    }}
+    div[data-testid="stMetricLabel"], div[data-testid="stMetricLabel"] * {{
+        font-size: 0.8rem !important;
+        font-weight: 600 !important;
+        color: {muted} !important;
+        text-transform: none !important;
+        letter-spacing: 0 !important;
+    }}
+    div[data-testid="stMetricValue"], div[data-testid="stMetricValue"] * {{
+        font-size: 1.45rem !important;
+        font-weight: 750 !important;
+        letter-spacing: -0.02em;
+        line-height: 1.25 !important;
+        color: {text} !important;
+        overflow: hidden; text-overflow: ellipsis;
+    }}
+    div[data-testid="stMetricDelta"] {{ font-weight: 650; }}
+    div[data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Up"] ~ div,
+    div[data-testid="stMetricDelta"]:has(svg[data-testid="stMetricDeltaIcon-Up"]) * {{ color: {up} !important; fill: {up} !important; }}
+    div[data-testid="stMetricDelta"]:has(svg[data-testid="stMetricDeltaIcon-Down"]) * {{ color: {down} !important; fill: {down} !important; }}
+
+    /* ---------- Containers, expanders, dataframes ---------- */
+    [data-testid="stExpander"] details, [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]) {{
+        border-color: {line} !important;
+        border-radius: 12px !important;
+    }}
+    [data-testid="stExpander"] details {{ background: {surface} !important; box-shadow: {shadow}; }}
+    [data-testid="stExpander"] summary {{ font-weight: 650; background: {surface} !important; border-radius: 12px; }}
+    [data-testid="stExpander"] details[open] > summary {{ border-radius: 12px 12px 0 0; }}
+    [data-testid="stExpander"] summary:hover {{ background: {raised} !important; border-radius: 12px; }}
+    .stDataFrame, [data-testid="stTable"] {{
+        border: 1px solid {line}; border-radius: 12px; overflow: hidden;
+    }}
+    .stDataFrame [class*="glide"] {{ font-size: 0.86rem !important; }}
+    [data-testid="stPlotlyChart"] {{
+        background: {surface};
+        border: 1px solid {line};
+        border-radius: 12px;
+        padding: 6px 8px 2px 8px;
+        box-shadow: {shadow};
+    }}
+
+    /* ---------- Tabs: quiet underline, brass active marker ---------- */
     .stTabs [data-baseweb="tab-list"] {{
-        gap: 2px;
-        flex-wrap: wrap;
-        row-gap: 4px;
-        border-bottom: 1px solid {divider_color};
+        gap: 4px; flex-wrap: wrap; row-gap: 4px;
+        border-bottom: 1px solid {line};
+        background: transparent !important;
     }}
     .stTabs [data-baseweb="tab"] {{
+        padding: 10px 14px; height: auto;
+        font-weight: 650; font-size: 0.9rem;
+        background: transparent !important;
         border-radius: 8px 8px 0 0;
-        padding: 8px 14px;
-        font-weight: 600;
-        font-size: 0.88rem;
-        color: {muted_text_color} !important;
-        transition: background-color 0.15s ease, color 0.15s ease;
     }}
-    .stTabs [data-baseweb="tab"]:hover {{
-        background-color: {tab_active_bg} !important;
-        color: {text_color} !important;
-    }}
-    .stTabs [aria-selected="true"] {{
-        background-color: {tab_active_bg} !important;
-        color: {accent} !important;
-        border-bottom: 2px solid {accent};
+    .stTabs [data-baseweb="tab"] * {{ color: {muted} !important; }}
+    .stTabs [data-baseweb="tab"]:hover * {{ color: {text} !important; }}
+    .stTabs [aria-selected="true"] * {{ color: {text} !important; }}
+    .stTabs [data-baseweb="tab-highlight"] {{ background-color: {accent} !important; height: 2px !important; }}
+    .stTabs [data-baseweb="tab-border"] {{ display: none; }}
+
+    /* ---------- Alerts ---------- */
+    [data-testid="stAlert"] > div, [data-testid="stAlertContainer"] {{
+        border-radius: 12px !important;
+        border: 1px solid {line} !important;
     }}
 
-    /* Buttons */
-    .stButton button {{
-        border-radius: 8px;
-        font-weight: 600;
-        font-size: 0.88rem;
+    /* ---------- Checkbox, radio, slider, toggle accents ---------- */
+    [data-testid="stCheckbox"] label span:first-child[style], [role="radiogroup"] label div:first-child[style] {{
+        border-color: {accent} !important;
+    }}
+    [data-testid="stSlider"] [role="slider"] {{ background: {accent} !important; border-color: {accent} !important; }}
+
+    hr {{ border-color: {line} !important; }}
+
+    /* ---------- Hero ticker card (the page's signature element) ---------- */
+    .ledger-hero {{
+        background: {surface};
+        border: 1px solid {line};
+        border-radius: 18px;
+        padding: 22px 26px 18px 26px;
+        box-shadow: {shadow};
+        margin: 0 0 1.4rem 0;
+    }}
+    .ledger-hero-top {{ display: flex; gap: 22px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }}
+    .ledger-hero-id {{ display: flex; gap: 16px; align-items: center; min-width: 0; }}
+    .ledger-logo {{
+        width: 56px; height: 56px; border-radius: 14px; flex: none;
+        background: {raised}; border: 1px solid {line};
+        display: grid; place-items: center; overflow: hidden;
+    }}
+    .ledger-logo img {{ width: 100%; height: 100%; object-fit: contain; background: #fff; }}
+    .stApp .ledger-logo-mono {{ font-weight: 850; font-size: 1.15rem; color: {accent} !important; letter-spacing: -0.02em; }}
+    .stApp .ledger-company {{ font-size: 1.6rem; font-weight: 800; letter-spacing: -0.025em; line-height: 1.1; margin: 0; }}
+    .ledger-tags {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }}
+    .stApp .ledger-symbol {{
+        font-weight: 800; font-size: 0.82rem; letter-spacing: 0.06em;
+        background: {accent}; color: {on_accent} !important;
+        padding: 3px 9px; border-radius: 6px;
+    }}
+    .stApp .ledger-tag {{
+        font-size: 0.78rem; font-weight: 600; color: {muted} !important;
+        border: 1px solid {line}; padding: 2px 9px; border-radius: 999px;
+    }}
+    .ledger-quote {{ text-align: right; margin-left: auto; }}
+    .stApp .ledger-price {{ font-size: 2.6rem; font-weight: 800; letter-spacing: -0.035em; line-height: 1; }}
+    .stApp .ledger-ccy {{ font-size: 0.95rem; font-weight: 650; color: {muted} !important; margin-left: 6px; letter-spacing: 0; }}
+    .stApp .ledger-move {{
+        display: inline-block; margin-top: 10px; font-weight: 750; font-size: 0.92rem;
+        padding: 4px 10px; border-radius: 8px;
+    }}
+    .stApp .ledger-move.up {{ background: {up_soft}; color: {up} !important; }}
+    .stApp .ledger-move.down {{ background: {down_soft}; color: {down} !important; }}
+    .stApp .ledger-move.flat {{ background: {raised}; color: {muted} !important; }}
+    .stApp .ledger-fx {{ display: block; margin-top: 6px; font-size: 0.8rem; color: {muted} !important; }}
+
+    /* 52-week range rail: where today's price sits in the past year */
+    .ledger-rail-wrap {{ margin: 22px 0 4px 0; }}
+    .ledger-rail-labels {{ display: flex; justify-content: space-between; font-size: 0.78rem; }}
+    .stApp .ledger-rail-labels span {{ color: {muted} !important; }}
+    .stApp .ledger-rail-labels b {{ color: {text} !important; font-weight: 700; }}
+    .ledger-rail {{
+        position: relative; height: 6px; border-radius: 999px; margin: 8px 0 6px 0;
+        background: linear-gradient(90deg, {down_soft}, {raised} 50%, {up_soft});
+        border: 1px solid {line};
+    }}
+    .ledger-rail-fill {{ position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: {accent}; opacity: .35; }}
+    .ledger-rail-dot {{
+        position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%;
+        transform: translate(-50%, -50%); background: {accent};
+        box-shadow: 0 0 0 4px {surface}, 0 0 0 5px {accent};
     }}
 
-    /* Dividers: quieter than Streamlit's default */
-    hr {{ border-color: {divider_color} !important; }}
+    .ledger-stats {{
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 0; margin-top: 16px; border-top: 1px solid {line}; padding-top: 14px;
+    }}
+    .ledger-stat {{ padding: 0 16px; border-left: 1px solid {line}; }}
+    .ledger-stat:first-child {{ padding-left: 0; border-left: none; }}
+    .stApp .ledger-stat-label {{ font-size: 0.78rem; color: {muted} !important; font-weight: 600; }}
+    .stApp .ledger-stat-value {{ font-size: 1.02rem; font-weight: 750; margin-top: 2px; white-space: nowrap; }}
 
-    /* Ticker badge */
+    /* Legacy helper classes still used by a few pages */
     .ticker-badge {{
-        display: inline-block;
-        background: linear-gradient(135deg, #F5A623, #F76B1C);
-        color: #111 !important;
-        font-weight: 700;
-        padding: 4px 12px;
-        border-radius: 999px;
-        font-size: 0.85rem;
-        letter-spacing: 0.5px;
+        display: inline-block; background: {accent}; color: {on_accent} !important;
+        font-weight: 800; padding: 3px 10px; border-radius: 6px; font-size: 0.82rem; letter-spacing: 0.06em;
+    }}
+    .price-up {{ color: {up} !important; font-weight: 750; }}
+    .price-down {{ color: {down} !important; font-weight: 750; }}
+
+    /* ---------- Empty state (features not built yet) ---------- */
+    .ledger-empty {{
+        border: 1px dashed {line}; border-radius: 16px; background: {surface};
+        padding: 40px 32px; max-width: 640px; margin: 1rem 0;
+    }}
+    .stApp .ledger-empty-icon {{ font-size: 2rem; line-height: 1; }}
+    .stApp .ledger-empty h3 {{ margin: 14px 0 6px 0 !important; font-size: 1.3rem; }}
+    .stApp .ledger-empty p {{ color: {muted} !important; margin: 0; max-width: 60ch; }}
+    .stApp .ledger-empty-pill {{
+        display: inline-block; margin-top: 16px; font-size: 0.78rem; font-weight: 700;
+        color: {accent} !important; background: {accent_soft}; padding: 4px 10px; border-radius: 999px;
     }}
 
-    .price-up {{ color: #00C805 !important; font-weight: 700; font-family: 'JetBrains Mono', monospace; }}
-    .price-down {{ color: #FF3B30 !important; font-weight: 700; font-family: 'JetBrains Mono', monospace; }}
+    /* ---------- Footer strip ---------- */
+    .ledger-footer {{
+        margin-top: 3rem; padding-top: 1rem; border-top: 1px solid {line};
+        display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 0.8rem;
+    }}
+    .stApp .ledger-footer span {{ color: {muted} !important; }}
 
     footer {{ visibility: hidden; }}
+
+    @media (max-width: 760px) {{
+        .ledger-quote {{ text-align: left; margin-left: 0; }}
+        .stApp .ledger-price {{ font-size: 2.1rem; }}
+        .ledger-stat {{ padding: 8px 0; border-left: none; }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+        * {{ transition: none !important; animation: none !important; }}
+    }}
 </style>
 """
+# ----- END UI REDESIGN: design system ----- #
 
 
 # =========================================================================== #
@@ -3483,7 +3761,7 @@ def _dcf_kpi_card(icon, icon_bg, label, value, value_color, subtext, subtext_col
                          display:flex; align-items:center; justify-content:center; font-size:0.85rem;">{icon}</span>
         </div>
         <div>
-            <div style="font-family:'JetBrains Mono',monospace; font-size:1.5rem; font-weight:700; color:{value_color} !important;">{value}</div>
+            <div style="font-size:1.5rem; font-weight:700; color:{value_color} !important;">{value}</div>
             <div style="color:{subtext_color} !important; font-size:0.78rem; margin-top:2px;">{subtext}</div>
         </div>
     </div>
@@ -3500,7 +3778,7 @@ def _dcf_scenario_card(emoji, label, label_color, header_bg, tg_pct, wacc_pct, v
         <div style="color:{label_color} !important; font-weight:700; font-size:0.98rem;">{label}</div>
         <div style="color:{muted} !important; font-size:0.76rem; margin-top:8px;">Terminal Growth: {tg_pct}</div>
         <div style="color:{muted} !important; font-size:0.76rem;">WACC: {wacc_pct}</div>
-        <div style="font-family:'JetBrains Mono',monospace; font-size:1.6rem; font-weight:800; color:{label_color} !important; margin-top:10px;">{value}</div>
+        <div style="font-size:1.3rem; font-weight:800; color:{label_color} !important; margin-top:10px; white-space:nowrap;">{value}</div>
         <div style="color:{upside_color} !important; font-size:0.8rem; font-weight:600; margin-top:4px;">{upside_text}</div>
     </div>
     """
@@ -3534,10 +3812,10 @@ def _dcf_price_range_bar(bear_val, current_val, base_val, bull_val, muted):
         return max(3, min(97, (v - lo) / span * 100))
 
     markers = [
-        (bear_val, "Bear Case", "#FF5A4E"),
-        (current_val, "Current Price", "#E8EAED"),
-        (base_val, "Intrinsic Value (Base)", "#5B9BD9"),
-        (bull_val, "Bull Case", "#3DDC63"),
+        (bear_val, "Bear Case", _tk("down")),
+        (current_val, "Current Price", _tk("text")),
+        (base_val, "Intrinsic Value (Base)", _tk("series_1")),
+        (bull_val, "Bull Case", _tk("up")),
     ]
     labels_html = ""
     ticks_html = ""
@@ -3547,18 +3825,18 @@ def _dcf_price_range_bar(bear_val, current_val, base_val, bull_val, muted):
         p = pos(val)
         labels_html += (
             f'<div style="position:absolute; left:{p}%; transform:translateX(-50%); text-align:center; top:-48px; white-space:nowrap;">'
-            f'<div style="font-family:\'JetBrains Mono\',monospace; font-weight:700; color:{color} !important; font-size:0.85rem;">${val:,.2f}</div>'
+            f'<div style="font-weight:700; color:{color} !important; font-size:0.85rem;">${val:,.2f}</div>'
             f'<div style="color:{muted} !important; font-size:0.68rem;">{label}</div>'
             f"</div>"
         )
         ticks_html += (
             f'<div style="position:absolute; left:{p}%; top:0; width:2px; height:100%; '
-            f'background:rgba(255,255,255,0.7); transform:translateX(-1px);"></div>'
+            f'background:{_tk("text")}; transform:translateX(-1px);"></div>'
         )
 
     return f"""
     <div style="position:relative; margin-top:56px; margin-bottom:10px; height:10px; border-radius:6px;
-                background:linear-gradient(to right, #FF5A4E, #A25FE8, #5B9BD9, #3DDC63);">
+                background:linear-gradient(to right, {_tk('down')}, {_tk('series_3')}, {_tk('series_1')}, {_tk('up')});">
         {ticks_html}
         {labels_html}
     </div>
@@ -3578,11 +3856,8 @@ def render_dcf_valuation_page() -> None:
     check_dcf_suitability, generate_dcf_narrative — see SECTION 5B above).
     Only the presentation layer changed here.
     """
-    _dcf_theme = st.session_state.get("theme_mode_toggle", "Light")
-    if _dcf_theme == "Light":
-        card_bg, card_border, muted = "#F7F8FA", "rgba(0,0,0,0.10)", "#5B6472"
-    else:
-        card_bg, card_border, muted = "#161B22", "rgba(255,255,255,0.10)", "#9AA4B2"
+    _dcf_tokens = get_theme_tokens(_theme_mode)
+    card_bg, card_border, muted = _dcf_tokens["surface"], _dcf_tokens["line"], _dcf_tokens["muted"]
 
     header_col1, header_col2 = st.columns([4, 1])
     with header_col1:
@@ -3590,7 +3865,7 @@ def render_dcf_valuation_page() -> None:
             f"""
             <div style="display:flex; align-items:baseline; gap:10px;">
                 <span style="font-size:1.5rem; font-weight:800;">DCF Valuation</span>
-                <span style="background:rgba(0,200,5,0.15); color:#00C805 !important; padding:2px 10px;
+                <span style="background:{_dcf_tokens['accent_soft']}; color:{_dcf_tokens['accent']} !important; padding:2px 10px;
                              border-radius:999px; font-size:0.68rem; font-weight:700;">BETA</span>
             </div>
             <p style="color:{muted} !important; margin-top:2px; margin-bottom:0;">
@@ -3749,9 +4024,9 @@ def render_dcf_valuation_page() -> None:
         st.markdown(
             _dcf_kpi_card(
                 "💲", "rgba(0,200,5,0.15)", "Intrinsic Value (Base)",
-                f"${base_iv:,.2f}" if base_iv else "N/A", "#3DDC63",
+                f"${base_iv:,.2f}" if base_iv else "N/A", _tk("up"),
                 f"{base_upside:+.2f}% Upside" if base_upside is not None else "vs. current price unavailable",
-                "#3DDC63" if (base_upside or 0) >= 0 else "#FF5A4E",
+                _tk("up") if (base_upside or 0) >= 0 else _tk("down"),
                 card_bg, card_border, muted,
             ),
             unsafe_allow_html=True,
@@ -3760,7 +4035,7 @@ def render_dcf_valuation_page() -> None:
         st.markdown(
             _dcf_kpi_card(
                 "🎯", "rgba(162,95,232,0.18)", "Fair Value Range",
-                f"${bear_iv:,.2f} – ${bull_iv:,.2f}" if bear_iv and bull_iv else "N/A", "#E6E8EB",
+                f"${bear_iv:,.2f} – ${bull_iv:,.2f}" if bear_iv and bull_iv else "N/A", _tk("text"),
                 f"Bear ${bear_iv:,.0f}  ·  Bull ${bull_iv:,.0f}" if bear_iv and bull_iv else "",
                 muted, card_bg, card_border, muted,
             ),
@@ -3770,7 +4045,7 @@ def render_dcf_valuation_page() -> None:
         st.markdown(
             _dcf_kpi_card(
                 "📈", "rgba(91,155,217,0.18)", "WACC",
-                f"{wacc_input:.2%}", "#5B9BD9", "Cost of Capital",
+                f"{wacc_input:.2%}", _tk("series_1"), "Cost of Capital",
                 muted, card_bg, card_border, muted,
             ),
             unsafe_allow_html=True,
@@ -3779,7 +4054,7 @@ def render_dcf_valuation_page() -> None:
         st.markdown(
             _dcf_kpi_card(
                 "📊", "rgba(162,95,232,0.18)", "Terminal Growth",
-                f"{terminal_growth_input:.2%}", "#A25FE8", "Perpetual Growth Rate",
+                f"{terminal_growth_input:.2%}", _tk("series_3"), "Perpetual Growth Rate",
                 muted, card_bg, card_border, muted,
             ),
             unsafe_allow_html=True,
@@ -3835,7 +4110,7 @@ def render_dcf_valuation_page() -> None:
                     labels=["PV of FCF (Years 1-N)", "PV of Terminal Value"],
                     values=[max(sum_pv_fcf, 0), max(sum_pv_terminal, 0)],
                     hole=0.62,
-                    marker=dict(colors=["#5B9BD9", "#A25FE8"]),
+                    marker=dict(colors=[_tk("series_1"), _tk("series_3")]),
                     textinfo="none",
                 )
             ]
@@ -3851,20 +4126,20 @@ def render_dcf_valuation_page() -> None:
             <div style="font-size:0.82rem;">
                 <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
                     <span>🔵 PV of FCF (Years 1-{projection_years_input})</span>
-                    <span style="font-family:'JetBrains Mono',monospace;">{fmt_large_number(sum_pv_fcf)} · {pv_fcf_pct:.1f}%</span>
+                    <span style="">{fmt_large_number(sum_pv_fcf)} · {pv_fcf_pct:.1f}%</span>
                 </div>
                 <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
                     <span>🟣 PV of Terminal Value</span>
-                    <span style="font-family:'JetBrains Mono',monospace;">{fmt_large_number(sum_pv_terminal)} · {pv_term_pct:.1f}%</span>
+                    <span style="">{fmt_large_number(sum_pv_terminal)} · {pv_term_pct:.1f}%</span>
                 </div>
                 <div style="display:flex; justify-content:space-between; border-top:1px solid {card_border}; padding-top:6px; margin-top:6px;">
                     <span>Enterprise Value</span>
-                    <span style="font-family:'JetBrains Mono',monospace;">{fmt_large_number(ev_total)}</span>
+                    <span style="">{fmt_large_number(ev_total)}</span>
                 </div>
             </div>
             <div style="margin-top:12px; border:1px solid {card_border}; border-radius:10px; padding:10px 14px;">
                 <div style="color:{muted} !important; font-size:0.76rem;">Equity Value</div>
-                <div style="font-family:'JetBrains Mono',monospace; font-size:1.4rem; font-weight:800; color:#3DDC63 !important;">{fmt_large_number(base_result.equity_value)}</div>
+                <div style="font-size:1.4rem; font-weight:800; color:{_tk('up')} !important;">{fmt_large_number(base_result.equity_value)}</div>
             </div>
             </div>
             """,
@@ -3886,33 +4161,33 @@ def render_dcf_valuation_page() -> None:
         with sc1:
             st.markdown(
                 _dcf_scenario_card(
-                    "🐻", "Bear Case", "#FF5A4E", "rgba(255,90,78,0.18)",
+                    "🐻", "Bear Case", _tk("down"), "rgba(255,90,78,0.18)",
                     f"{bear_result.assumptions['terminal_growth']:.1%}", f"{bear_result.assumptions['wacc']:.1%}",
                     f"${bear_iv:,.2f}" if bear_iv else "N/A",
                     f"{bear_upside:+.1f}% vs. price" if bear_upside is not None else "",
-                    "#FF5A4E", card_bg, card_border, muted,
+                    _tk("down"), card_bg, card_border, muted,
                 ),
                 unsafe_allow_html=True,
             )
         with sc2:
             st.markdown(
                 _dcf_scenario_card(
-                    "⚖️", "Base Case", "#5B9BD9", "rgba(91,155,217,0.18)",
+                    "⚖️", "Base Case", _tk("series_1"), "rgba(91,155,217,0.18)",
                     f"{base_result.assumptions['terminal_growth']:.1%}", f"{base_result.assumptions['wacc']:.1%}",
                     f"${base_iv:,.2f}" if base_iv else "N/A",
                     f"{base_upside:+.1f}% vs. price" if base_upside is not None else "",
-                    "#5B9BD9", card_bg, card_border, muted,
+                    _tk("series_1"), card_bg, card_border, muted,
                 ),
                 unsafe_allow_html=True,
             )
         with sc3:
             st.markdown(
                 _dcf_scenario_card(
-                    "🐐", "Bull Case", "#3DDC63", "rgba(61,220,99,0.18)",
+                    "🐐", "Bull Case", _tk("up"), "rgba(61,220,99,0.18)",
                     f"{bull_result.assumptions['terminal_growth']:.1%}", f"{bull_result.assumptions['wacc']:.1%}",
                     f"${bull_iv:,.2f}" if bull_iv else "N/A",
                     f"{bull_upside:+.1f}% vs. price" if bull_upside is not None else "",
-                    "#3DDC63", card_bg, card_border, muted,
+                    _tk("up"), card_bg, card_border, muted,
                 ),
                 unsafe_allow_html=True,
             )
@@ -3953,7 +4228,7 @@ def render_dcf_valuation_page() -> None:
                 border = f"2px solid {muted}" if is_base_cell else "1px solid transparent"
                 cells += (
                     f'<td style="background:{bg}; text-align:center; padding:7px 8px; '
-                    f'font-family:\'JetBrains Mono\',monospace; font-size:0.78rem; border-radius:4px; '
+                    f'font-size:0.78rem; border-radius:4px; '
                     f'border:{border};">'
                     f'{f"${v:,.0f}" if v is not None else "N/A"}</td>'
                 )
@@ -4942,9 +5217,17 @@ def render_education_mode_page() -> None:
 def _render_coming_soon(title: str, icon: str, description: str) -> None:
     """Shared layout for not-yet-built features — honestly labeled rather
     than faked, so nothing in the nav claims functionality that doesn't exist."""
-    st.markdown(f"#### {icon} {title}")
-    st.info(f"🚧 **Coming soon.** {description}")
-    st.caption("This page is a placeholder in the current build and isn't functional yet.")
+    st.markdown(
+        f"""
+        <div class="ledger-empty">
+            <div class="ledger-empty-icon">{icon}</div>
+            <h3>{title}</h3>
+            <p>{description}</p>
+            <span class="ledger-empty-pill">Not built yet — planned for a future release</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_stock_screener_page() -> None:
@@ -5070,27 +5353,26 @@ if GA_MEASUREMENT_ID and not st.session_state.get("_ga4_injected"):
 # Reads the persisted theme choice (set by the sidebar widget below) before
 # the widget itself is re-instantiated later in this run, so the CSS for
 # the correct theme is applied immediately.
-_theme_mode = st.session_state.get("theme_mode_toggle", "Light")
+# UI REDESIGN (v2.0): "Auto" (the default) follows Streamlit's own active
+# theme — set by the viewer's system or the ⋮ menu → Settings — so the custom
+# CSS always matches Streamlit's built-in widgets such as data tables, which
+# CSS cannot restyle. Both palettes live in .streamlit/config.toml.
+_theme_choice = st.session_state.get("theme_mode_toggle", "Auto")
+if _theme_choice in ("Dark", "Light"):
+    _theme_mode = _theme_choice
+else:
+    try:
+        _theme_mode = "Light" if st.context.theme.type == "light" else "Dark"
+    except Exception:
+        _theme_mode = "Dark"
 CUSTOM_CSS = build_custom_css(_theme_mode)
+apply_chart_palette(_theme_mode)  # charts follow the theme too
 # ----- END NEW: DARK/LIGHT THEME TOGGLE -----
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# ----- NEW: "Clone this app" banner ----- #
-# Small, unobtrusive link at the very top of the main content area —
-# purely additive, doesn't touch the sidebar, header, or any page content.
-st.markdown(
-    """
-    <div style="text-align:center; padding: 4px 0 10px 0; font-size: 0.82rem;">
-        ⭐ Like this project?
-        <a href="https://github.com/KiaanKothari/AI-Stock-Research-Assistant"
-           target="_blank" rel="noopener noreferrer">
-            Clone it for yourself on GitHub
-        </a>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-# ----- END NEW: "Clone this app" banner ----- #
+# UI REDESIGN (v2.0): the "Clone it on GitHub" link now lives in the sidebar
+# brand block and the page footer instead of a banner above the header.
+GITHUB_REPO_URL = "https://github.com/KiaanKothari/AI-Stock-Research-Assistant"
 
 
 # --------------------------------------------------------------------------- #
@@ -5204,116 +5486,135 @@ def build_pdf_report(symbol: str, info: dict, scores: dict) -> bytes:
 # Sidebar
 # --------------------------------------------------------------------------- #
 
+# ----- UI REDESIGN (v2.0): TOP NAVIGATION ----- #
+# Pages are grouped into Research / Portfolio / Tools / Learn dropdowns in a
+# top bar, which frees the sidebar to be a focused settings panel. Each page
+# is the same render_* function as before.
+pg = st.navigation(
+    {
+        "Research": [
+            st.Page(render_dashboard_page, title="Dashboard", icon="📊", default=True),
+            st.Page(render_stock_research_page, title="Stock Research", icon="🔍"),
+            st.Page(render_dcf_valuation_page, title="DCF Valuation", icon="🧮"),
+            st.Page(render_peers_page, title="Comparables", icon="🏆"),
+            st.Page(render_compare_page, title="Compare Stocks", icon="⚖️"),
+            st.Page(render_earnings_page, title="Earnings", icon="📅"),
+            st.Page(render_news_page, title="News & Sentiment", icon="📰"),
+        ],
+        "Portfolio": [
+            st.Page(render_portfolio_overview_page, title="Portfolio Overview", icon="💼"),
+            st.Page(render_holdings_page, title="Holdings", icon="📋"),
+            st.Page(render_performance_page, title="Performance", icon="📈"),
+            st.Page(render_risk_analysis_page, title="Risk Analysis", icon="⚠️"),
+        ],
+        "Tools": [
+            st.Page(render_stock_screener_page, title="Stock Screener", icon="🖥️"),
+            st.Page(render_watchlist_page, title="Watchlist", icon="⭐"),
+            st.Page(render_alerts_page, title="Alerts", icon="🔔"),
+            st.Page(render_options_analyzer_page, title="Options Analyzer", icon="🎯"),
+            st.Page(render_backtest_page, title="Backtest", icon="🔁"),
+            st.Page(render_dividends_page, title="Dividends", icon="💵"),
+            st.Page(render_export_page, title="Export", icon="📤"),
+        ],
+        "Learn": [
+            st.Page(render_education_mode_page, title="Education Mode", icon="🎓"),
+            st.Page(render_ai_tutor_page, title="AI Tutor", icon="🤖"),
+        ],
+    },
+    position="top",
+)
+# ----- END UI REDESIGN: TOP NAVIGATION ----- #
+
+# Kept on one line: st.markdown treats indented multi-line HTML as a code block.
+_LEDGER_MARK = (
+    '<svg width="38" height="38" viewBox="0 0 38 38" aria-hidden="true">'
+    '<rect x="0.5" y="0.5" width="37" height="37" rx="10" fill="var(--ledger-raised)" stroke="var(--ledger-line)"/>'
+    '<rect x="9" y="20" width="4" height="9" rx="1.2" fill="var(--ledger-muted)"/>'
+    '<rect x="17" y="14" width="4" height="15" rx="1.2" fill="var(--ledger-muted)"/>'
+    '<rect x="25" y="9" width="4" height="20" rx="1.2" fill="var(--ledger-accent)"/>'
+    '</svg>'
+)
+
 with st.sidebar:
-    st.markdown("## 📈 AI Stock Research")
-    st.caption("Bloomberg-inspired equity research dashboard")
-
-    # ----- NEW: SIDEBAR NAVIGATION (UI overhaul) ----- #
-    # Replaces the old flat/nested tab bar with Streamlit's native grouped
-    # sidebar navigation, matching the v2 dashboard design. Each page below
-    # is the exact same content that used to live in a `with tab_X:` block
-    # (see SECTION 7E above) — Stock Screener, Options Analyzer, and AI
-    # Tutor are honestly labeled "Coming Soon" placeholders since they
-    # aren't built yet, rather than being faked as functional.
-    pg = st.navigation(
-        {
-            "Research": [
-                st.Page(render_dashboard_page, title="Dashboard", icon="📊", default=True),
-                st.Page(render_stock_research_page, title="Stock Research", icon="🔍"),
-                st.Page(render_dcf_valuation_page, title="DCF Valuation", icon="🧮"),
-                st.Page(render_peers_page, title="Comparables", icon="🏆"),
-                st.Page(render_compare_page, title="Compare Stocks", icon="⚖️"),
-                st.Page(render_earnings_page, title="Earnings", icon="📅"),
-                st.Page(render_news_page, title="News & Sentiment", icon="📰"),
-            ],
-            "Portfolio": [
-                st.Page(render_portfolio_overview_page, title="Portfolio Overview", icon="💼"),
-                st.Page(render_holdings_page, title="Holdings", icon="📋"),
-                st.Page(render_performance_page, title="Performance", icon="📈"),
-                st.Page(render_risk_analysis_page, title="Risk Analysis", icon="⚠️"),
-            ],
-            "Tools": [
-                st.Page(render_stock_screener_page, title="Stock Screener", icon="🖥️"),
-                st.Page(render_watchlist_page, title="Watchlist", icon="⭐"),
-                st.Page(render_alerts_page, title="Alerts", icon="🔔"),
-                st.Page(render_options_analyzer_page, title="Options Analyzer", icon="🎯"),
-                st.Page(render_backtest_page, title="Backtest", icon="🔁"),
-                st.Page(render_dividends_page, title="Dividends", icon="💵"),
-                st.Page(render_export_page, title="Export", icon="📤"),
-            ],
-            "Learn": [
-                st.Page(render_education_mode_page, title="Education Mode", icon="🎓"),
-                st.Page(render_ai_tutor_page, title="AI Tutor", icon="🤖"),
-            ],
-        }
-    )
-    # ----- END NEW: SIDEBAR NAVIGATION ----- #
-
-    st.divider()
-    st.markdown("#### Session Settings")
-
-    symbol_input = st.text_input("Ticker Symbol", value="AAPL", placeholder="e.g. AAPL, MSFT, TSLA").strip().upper()
-
-    period = st.selectbox(
-        "Chart Period",
-        options=["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"],
-        index=3,
-    )
-    interval = st.selectbox(
-        "Interval",
-        options=["1d", "1wk", "1mo"],
-        index=0,
+    st.markdown(
+        f'<div class="ledger-brand">{_LEDGER_MARK}<div>'
+        '<div class="ledger-brand-name">AI Stock Research</div>'
+        '<div class="ledger-brand-tag">Equity research desk</div></div></div>',
+        unsafe_allow_html=True,
     )
 
-    with st.expander("Chart Overlays"):
-        show_sma20 = st.checkbox("20-Day SMA", value=True)
-        show_sma50 = st.checkbox("50-Day SMA", value=True)
-        show_sma200 = st.checkbox("200-Day SMA", value=False)
+    symbol_input = st.text_input(
+        "Ticker",
+        value="AAPL",
+        placeholder="e.g. AAPL, MSFT, TSLA",
+        key="ticker_symbol_input",
+        help="Type a stock symbol and press Enter. Every page follows this ticker.",
+    ).strip().upper()
+
+    _period_col, _interval_col = st.columns(2)
+    with _period_col:
+        period = st.selectbox(
+            "Period",
+            options=["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"],
+            index=3,
+        )
+    with _interval_col:
+        interval = st.selectbox(
+            "Interval",
+            options=["1d", "1wk", "1mo"],
+            index=0,
+        )
+
+    with st.expander("Chart overlays"):
+        show_sma20 = st.checkbox("20-day SMA", value=True)
+        show_sma50 = st.checkbox("50-day SMA", value=True)
+        show_sma200 = st.checkbox("200-day SMA", value=False)
         show_bollinger = st.checkbox("Bollinger Bands", value=False)
 
-    with st.expander("Watchlist Quick Actions"):
+    with st.expander("Watchlist"):
         col_a, col_b = st.columns(2)
         with col_a:
-            if st.button("⭐ Add", use_container_width=True):
+            if st.button(f"Add {symbol_input or 'ticker'}", use_container_width=True):
                 add_to_watchlist(symbol_input)
                 st.toast(f"{symbol_input} added to watchlist")
         with col_b:
-            if st.button("🗑️ Remove", use_container_width=True):
+            if st.button("Remove", use_container_width=True):
                 remove_from_watchlist(symbol_input)
-                st.toast(f"{symbol_input} removed")
+                st.toast(f"{symbol_input} removed from watchlist")
         if st.session_state.get(WATCHLIST_KEY):
-            st.caption("Current watchlist:")
-            st.write(", ".join(st.session_state[WATCHLIST_KEY]))
+            st.caption("On your watchlist: " + ", ".join(st.session_state[WATCHLIST_KEY]))
+        else:
+            st.caption("Your watchlist is empty. Add the current ticker to start one.")
 
-    with st.expander("Compare Stocks — Tickers"):
+    with st.expander("Compare stocks"):
         compare_symbols = st.text_input(
-            "Comma-separated tickers", value="AAPL, MSFT, GOOGL", key="compare_input"
+            "Tickers to compare (comma-separated)", value="AAPL, MSFT, GOOGL", key="compare_input"
         )
 
-    # ----- NEW: EDUCATION MODE (Requirement 1) ----- #
-    with st.expander("🎓 Classroom Tools"):
+    # ----- EDUCATION MODE (Requirement 1) ----- #
+    with st.expander("Classroom tools"):
         education_mode = st.checkbox(
-            "🎓 Show inline explanations",
+            "Show inline explanations",
             value=False,
             key="education_mode_toggle",
             help="Adds classroom-friendly metric explanation cards to "
             "Dashboard and Stock Research. The full Learn/Classroom content "
-            "is always available from the Learn section of the sidebar nav "
-            "above, regardless of this toggle.",
+            "is always available from the Learn menu in the top bar, "
+            "regardless of this toggle.",
         )
         student_mode = False
         if education_mode:
             student_mode = st.checkbox(
-                "👦 Student Mode",
+                "Student mode",
                 value=False,
                 key="student_mode_toggle",
                 help="Hides advanced metrics and simplifies terminology for "
                 "student use.",
             )
-    # ----- END NEW: EDUCATION MODE ----- #
+    # ----- END EDUCATION MODE ----- #
 
-    # ----- NEW: MULTI-CURRENCY DISPLAY SUPPORT (v1.3) ----- #
-    with st.expander("💱 Display Currency"):
+    # ----- MULTI-CURRENCY DISPLAY SUPPORT (v1.3) ----- #
+    with st.expander("Display currency"):
         display_currency = st.selectbox(
             "Currency",
             options=SUPPORTED_CURRENCIES,
@@ -5328,23 +5629,25 @@ with st.sidebar:
         _DISPLAY_CURRENCY_SYMBOL = CURRENCY_SYMBOLS.get(display_currency, "$")
         if display_currency != "USD":
             st.caption(f"1 USD ≈ {_DISPLAY_FX_RATE:.4f} {display_currency}")
-    # ----- END NEW: MULTI-CURRENCY DISPLAY SUPPORT ----- #
+    # ----- END MULTI-CURRENCY DISPLAY SUPPORT ----- #
 
     st.divider()
 
-    # ----- NEW: DARK/LIGHT THEME TOGGLE — moved to bottom of sidebar ----- #
-    _theme_index = 0 if _theme_mode == "Dark" else 1
+    # ----- DARK/LIGHT THEME TOGGLE ----- #
+    _theme_options = ["Auto", "Dark", "Light"]
     st.radio(
-        "🌓 Theme",
-        options=["Dark", "Light"],
-        index=_theme_index,
+        "Theme",
+        options=_theme_options,
+        index=_theme_options.index(_theme_choice) if _theme_choice in _theme_options else 0,
         key="theme_mode_toggle",
         horizontal=True,
-        help="Switch between the dashboard's dark and light color schemes.",
+        help="Auto matches your system setting (or ⋮ menu → Settings), and "
+        "keeps data tables in step with the rest of the page. Dark and Light "
+        "force that scheme for the page, cards and charts.",
     )
-    # ----- END NEW: DARK/LIGHT THEME TOGGLE ----- #
+    # ----- END DARK/LIGHT THEME TOGGLE ----- #
 
-    st.caption("⚠️ For educational purposes only. Not financial advice.")
+    st.caption(f"For educational purposes only — not financial advice. [Clone this app on GitHub]({GITHUB_REPO_URL})")
 
 
 # --------------------------------------------------------------------------- #
@@ -5352,7 +5655,7 @@ with st.sidebar:
 # --------------------------------------------------------------------------- #
 
 if not symbol_input:
-    st.info("👈 Enter a ticker symbol in the sidebar to begin.")
+    st.info("Enter a ticker symbol in the sidebar to begin — for example AAPL or MSFT.")
     st.stop()
 
 with st.spinner(f"Loading data for {symbol_input}..."):
@@ -5400,52 +5703,118 @@ logo_url = get_logo_url(symbol_input, info.get("website"))
 # Header
 # --------------------------------------------------------------------------- #
 
-header_col1, header_col2, header_col3 = st.columns([1, 4, 2])
+# ----- UI REDESIGN (v2.0): HERO TICKER CARD ----- #
+# One HTML card replaces the old three-column header: identity on the left,
+# the quote on the right, a 52-week range rail showing where today's price
+# sits in the past year, and a row of key stats. All values come from the
+# same `info` / `live` dicts the old header used.
+import html as _html
 
-with header_col1:
+
+def _render_hero_card() -> None:
+    company = info.get("shortName") or info.get("longName") or symbol_input
+    tags = [v for v in (info.get("sector"), info.get("industry"), info.get("country")) if v]
+    tags_html = "".join(f'<span class="ledger-tag">{_html.escape(str(t))}</span>' for t in tags)
+
     if logo_url:
-        try:
-            st.image(logo_url, width=72)
-        except Exception:
-            st.markdown("### 🏢")
+        logo_html = f'<img src="{_html.escape(logo_url)}" alt="{_html.escape(company)} logo">'
     else:
-        st.markdown("### 🏢")
+        logo_html = f'<span class="ledger-logo-mono">{_html.escape(symbol_input[:2])}</span>'
 
-with header_col2:
-    company_name = info.get("shortName") or info.get("longName") or symbol_input
-    st.markdown(f"### {company_name}  &nbsp; <span class='ticker-badge'>{symbol_input}</span>", unsafe_allow_html=True)
-    sector = info.get("sector", "—")
-    industry = info.get("industry", "—")
-    st.caption(f"{sector} • {industry} • {info.get('country', '—')}")
-
-with header_col3:
     price = live.get("price")
     change = live.get("change")
     pct_change = live.get("pct_change")
     currency = live.get("currency", "USD")
     if price is not None:
-        direction_class = "price-up" if (change or 0) >= 0 else "price-down"
-        arrow = "▲" if (change or 0) >= 0 else "▼"
-        st.markdown(f"### {price:,.2f} {currency}")
+        quote_html = f'<div class="ledger-price">{price:,.2f}<span class="ledger-ccy">{_html.escape(str(currency))}</span></div>'
         if change is not None and pct_change is not None:
-            st.markdown(
-                f"<span class='{direction_class}'>{arrow} {change:+.2f} ({pct_change:+.2f}%)</span>",
-                unsafe_allow_html=True,
+            direction = "up" if change > 0 else "down" if change < 0 else "flat"
+            arrow = {"up": "▲", "down": "▼", "flat": "■"}[direction]
+            quote_html += (
+                f'<span class="ledger-move {direction}">{arrow} {change:+,.2f} '
+                f'({pct_change:+.2f}%) today</span>'
             )
-        # ----- NEW: MULTI-CURRENCY DISPLAY SUPPORT (v1.3) ----- #
         if display_currency != currency:
-            st.caption(
-                f"≈ {fmt_currency_price(price, _DISPLAY_FX_RATE, _DISPLAY_CURRENCY_SYMBOL)} "
-                f"{display_currency}"
+            quote_html += (
+                f'<span class="ledger-fx">≈ {fmt_currency_price(price, _DISPLAY_FX_RATE, _DISPLAY_CURRENCY_SYMBOL)} '
+                f'{_html.escape(display_currency)}</span>'
             )
-        # ----- END NEW ----- #
     else:
-        st.markdown("### Price unavailable")
+        quote_html = '<div class="ledger-price" style="font-size:1.4rem">Price unavailable</div>'
 
-st.divider()
+    # 52-week range rail
+    low_52, high_52 = info.get("fiftyTwoWeekLow"), info.get("fiftyTwoWeekHigh")
+    if (low_52 is None or high_52 is None) and not hist.empty:
+        _year = hist.tail(252)
+        low_52, high_52 = float(_year["Low"].min()), float(_year["High"].max())
+    rail_html = ""
+    if price is not None and low_52 is not None and high_52 is not None and high_52 > low_52:
+        pos = max(0.0, min(100.0, (price - low_52) / (high_52 - low_52) * 100))
+        rail_html = f"""
+        <div class="ledger-rail-wrap" title="Today's price sits {pos:.0f}% of the way between the 52-week low and high">
+            <div class="ledger-rail-labels"><span>52-week low <b>{low_52:,.2f}</b></span><span>52-week high <b>{high_52:,.2f}</b></span></div>
+            <div class="ledger-rail"><div class="ledger-rail-fill" style="width:{pos:.1f}%"></div><div class="ledger-rail-dot" style="left:{pos:.1f}%"></div></div>
+        </div>"""
+
+    def _num(v, fmt="{:,.2f}"):
+        try:
+            return fmt.format(float(v))
+        except (TypeError, ValueError):
+            return "N/A"
+
+    day_low, day_high = info.get("dayLow"), info.get("dayHigh")
+    day_range = f"{_num(day_low)} – {_num(day_high)}" if day_low and day_high else "N/A"
+    volume = info.get("volume") or info.get("regularMarketVolume")
+    stats = [
+        ("Market cap", fmt_large_number(info.get("marketCap"))),
+        ("Day range", day_range),
+        ("Volume", _num(volume, "{:,.0f}") if volume else "N/A"),
+        ("P/E (trailing)", fmt_ratio(info.get("trailingPE"))),
+        ("Dividend yield", fmt_pct(info.get("dividendYield"))),
+    ]
+    stats_html = "".join(
+        f'<div class="ledger-stat"><div class="ledger-stat-label">{k}</div><div class="ledger-stat-value">{v}</div></div>'
+        for k, v in stats
+    )
+
+    st.markdown(
+        f"""
+        <div class="ledger-hero">
+            <div class="ledger-hero-top">
+                <div class="ledger-hero-id">
+                    <div class="ledger-logo">{logo_html}</div>
+                    <div style="min-width:0">
+                        <div class="ledger-company">{_html.escape(company)}</div>
+                        <div class="ledger-tags"><span class="ledger-symbol">{_html.escape(symbol_input)}</span>{tags_html}</div>
+                    </div>
+                </div>
+                <div class="ledger-quote">{quote_html}</div>
+            </div>
+            {rail_html}
+            <div class="ledger-stats">{stats_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_render_hero_card()
+company_name = info.get("shortName") or info.get("longName") or symbol_input
+# ----- END UI REDESIGN: HERO TICKER CARD ----- #
 
 # --------------------------------------------------------------------------- #
 # Render the selected page
 # --------------------------------------------------------------------------- #
 
 pg.run()
+
+# UI REDESIGN (v2.0): quiet footer on every page
+st.markdown(
+    f"""
+    <div class="ledger-footer">
+        <span>Market data from Yahoo Finance via yfinance. For educational purposes only — not financial advice.</span>
+        <span><a href="{GITHUB_REPO_URL}" target="_blank" rel="noopener noreferrer">Clone this app on GitHub</a></span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)

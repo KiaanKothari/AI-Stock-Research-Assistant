@@ -1,0 +1,45 @@
+# UI redesign (v2.0) — "Ledger" theme.
+#
+# Streamlit's own widgets (data tables, dropdowns, inputs, toasts) are themed
+# here, and the app's custom CSS (build_custom_css in app.py) uses the same
+# token values. The in-app Theme setting defaults to "Auto", which reads
+# whichever of these two palettes Streamlit is showing (it follows the
+# viewer's system setting, or the ⋮ menu → Settings → theme), so tables
+# and custom cards always match.
+
+[theme]
+font = "'Schibsted Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+headingFont = "'Schibsted Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+baseRadius = "9px"
+
+[theme.dark]
+primaryColor = "#D8B15A"
+backgroundColor = "#0F1724"
+secondaryBackgroundColor = "#1C2940"
+textColor = "#E6ECF5"
+borderColor = "#26354F"
+linkColor = "#D8B15A"
+dataframeBorderColor = "#26354F"
+dataframeHeaderBackgroundColor = "#162133"
+greenColor = "#3CCB8E"
+redColor = "#F0616D"
+
+[theme.dark.sidebar]
+backgroundColor = "#162133"
+secondaryBackgroundColor = "#1C2940"
+
+[theme.light]
+primaryColor = "#8A6518"
+backgroundColor = "#EEF2F7"
+secondaryBackgroundColor = "#F4F7FB"
+textColor = "#13213A"
+borderColor = "#D6DEE9"
+linkColor = "#8A6518"
+dataframeBorderColor = "#D6DEE9"
+dataframeHeaderBackgroundColor = "#F4F7FB"
+greenColor = "#0F8A5F"
+redColor = "#C93545"
+
+[theme.light.sidebar]
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F7FB"

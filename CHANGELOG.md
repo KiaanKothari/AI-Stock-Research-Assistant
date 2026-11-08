@@ -4,6 +4,26 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [2.0.0] - "Ledger" UI Redesign
+
+### 🎨 Interface
+
+- Complete visual redesign: ink-navy (dark) and cool-paper (light) themes with a single brass accent, set in Schibsted Grotesk with tabular figures so numbers line up.
+- Page navigation moved to a **top bar** with Research, Portfolio, Tools and Learn dropdowns; the sidebar is now a focused settings panel (brand, ticker, period/interval, overlays, watchlist, compare, classroom tools, currency, theme).
+- New **hero ticker card** on every page: logo, company and sector tags, live price with a colored daily-move pill, a 52-week range rail showing where today's price sits, and key stats (market cap, day range, volume, P/E, dividend yield).
+- Theme setting now offers **Auto / Dark / Light**. Auto (the default) follows Streamlit's active theme, so data tables, dropdowns and the page always match — fixing white tables in dark mode.
+- Plotly charts, DCF cards, scenario cards and the price-range bar now take their colors from the active theme (chart text and legends are readable in Light mode).
+- Restyled metric cards (sentence-case labels, smaller values), tabs, expanders, inputs, buttons, alerts and dataframes.
+- "Coming soon" pages use a clear empty-state card; the GitHub link moved to the sidebar and a footer.
+
+### 🔧 Technical
+
+- All colors come from one token set (`THEME_TOKENS`) shared by the CSS, charts and inline HTML cards.
+- Added `.streamlit/config.toml` with matching `[theme.light]` / `[theme.dark]` palettes for Streamlit's native components.
+- No changes to data, scoring, valuation or portfolio logic; all widget behavior is unchanged.
+
+---
+
 ## [1.3.0] - Alerts, Peers, Backtesting & Multi-Currency Update
 
 ### 🔔 New Features
