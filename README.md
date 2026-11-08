@@ -1,11 +1,11 @@
 🚀 **[Try the Live App](https://ai-stock-research-kiaan.streamlit.app/)**
-# 📈 AI Stock Research Assistant [RELEASE v1.4.0-beta.1 - DCF Valuation BETA]
+# 📈 AI Stock Research Assistant [RELEASE v2.0.0 — Ledger UI Redesign]
 
 An AI-powered stock research platform built with **Python, Streamlit, Plotly, and yfinance**, combining financial data, technical analysis, fundamental analysis, transparent rule-based scoring, portfolio tools, backtesting, and an interactive **DCF valuation model**.
 
 The project also includes an **Education Mode** designed to help students and teachers learn financial concepts using real market data.
 
-> **Current Release: v1.4.0-beta.1 — DCF Valuation Beta**
+> **Current Release: v2.0.0 — Ledger UI Redesign**
 
 ---
 
@@ -36,49 +36,33 @@ The goal is to combine **finance, quantitative analysis, software engineering, a
 
 ---
 
-# 🆕 What's New — v1.4.0-beta.1
+# 🆕 What's New — v2.0.0
 
-## 💰 DCF Valuation Model
+## 🎨 Ledger UI Redesign
 
-The latest release introduces a new **Discounted Cash Flow (DCF) valuation model**.
+v2.0.0 gives the whole app a new look. Every research, valuation, portfolio and education feature works exactly as before.
 
-Users can enter a company ticker and generate an estimated intrinsic value based on projected free cash flow and configurable valuation assumptions.
-
-### DCF Features
-
-* 📊 **5-year free cash flow projections**
-* 💰 Estimated intrinsic value
-* ⚙️ Configurable valuation assumptions
-* 📈 Current stock price vs. estimated intrinsic value
-* 🐻 Bear scenario
-* 📊 Base scenario
-* 🐂 Bull scenario
-* 📉 DCF sensitivity analysis
-* WACC sensitivity
-* Terminal-growth sensitivity
-* Margin-of-safety comparison
-
-The model is designed not only to produce a valuation estimate, but also to make the underlying assumptions visible to the user.
+* **New design:** an ink-navy dark mode and a cool-paper light mode with a single brass accent, set in Schibsted Grotesk with aligned numbers so figures line up in tables and cards.
+* **Top navigation bar:** pages are grouped into dropdown menus along the top of the screen, and the sidebar is now a focused settings panel.
+* **Ticker card on every page:** company logo, sector tags, live price with a colored daily-change pill, a 52-week range bar showing where today's price sits, and key stats (market cap, day range, volume, P/E, dividend yield).
+* **Auto / Dark / Light theme:** Auto (the default) follows your system setting, so data tables, dropdowns and the rest of the page always match.
+* **Theme-aware charts:** Plotly charts, DCF cards and the price-range bar take their colors from the active theme, so everything stays readable in light mode.
+* **Cleaner components:** redesigned metric cards, tabs, expanders, inputs, buttons and alerts, plus clear "not built yet" cards for features still in development.
 
 ---
 
-## 📚 DCF Education Mode
+## 🧭 Navigating the App
 
-The DCF feature is integrated into the application's Education Mode.
+Choose a ticker, chart period and interval in the sidebar, then pick a page from the top bar. Every page follows the ticker you've entered.
 
-Users can learn concepts such as:
+| Menu          | Pages                                                                                         |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| **Research**  | Dashboard, Stock Research, DCF Valuation, Comparables, Compare Stocks, Earnings, News & Sentiment |
+| **Portfolio** | Portfolio Overview, Holdings, Performance, Risk Analysis                                      |
+| **Tools**     | Stock Screener *(coming soon)*, Watchlist, Alerts, Options Analyzer *(coming soon)*, Backtest, Dividends, Export |
+| **Learn**     | Education Mode, AI Tutor *(coming soon)*                                                      |
 
-* Free Cash Flow
-* Discounted Cash Flow
-* WACC
-* Terminal Growth
-* Terminal Value
-* Enterprise Value
-* Equity Value
-* Intrinsic Value
-* Margin of Safety
-
-The goal is to help users understand **how a DCF works**, rather than simply displaying a final valuation number.
+The sidebar also holds chart overlays, watchlist shortcuts, the compare-stocks ticker list, classroom tools, display currency and the theme setting.
 
 ---
 
@@ -292,6 +276,24 @@ Students can access:
 
 ---
 
+## DCF Concepts
+
+Education Mode also explains the ideas behind the DCF model, including:
+
+* Free Cash Flow
+* Discounted Cash Flow
+* WACC
+* Terminal Growth
+* Terminal Value
+* Enterprise Value
+* Equity Value
+* Intrinsic Value
+* Margin of Safety
+
+The goal is to help users understand **how a DCF works**, rather than simply displaying a final valuation number.
+
+---
+
 ## For Teachers
 
 Teachers can use:
@@ -460,6 +462,10 @@ Market data, financial information, news, and FX data are retrieved through the 
 
 If credentials are added in the future, they should be stored using environment variables or Streamlit secrets and should never be committed to the repository.
 
+### Theme
+
+The app's colors and font for Streamlit's built-in components (data tables, dropdowns, inputs) live in `.streamlit/config.toml`, with matching `[theme.light]` and `[theme.dark]` palettes. The in-app **Theme** setting at the bottom of the sidebar chooses between Auto, Dark and Light.
+
 ---
 
 # 📁 Project Structure
@@ -467,11 +473,12 @@ If credentials are added in the future, they should be stored using environment 
 ```text
 AI-Stock-Research-Assistant/
 │
+├── .streamlit/
+│   └── config.toml      # light and dark theme palettes
 ├── app.py
 ├── requirements.txt
 ├── README.md
-├── CHANGELOG.md
-└── LICENSE
+└── CHANGELOG.md
 ```
 
 ---
@@ -480,6 +487,8 @@ AI-Stock-Research-Assistant/
 
 | Version           | Highlights                                                                                                                                                               |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **v2.0.0**        | Ledger UI redesign: top navigation bar, ticker card with 52-week range, Auto/Dark/Light themes matched to Streamlit's built-in components, theme-aware charts and DCF cards |
+| **v1.5.0-beta.1** | Complete UI redesign beta: sidebar page navigation, redesigned dashboard, research, DCF and Education Mode layouts                                                         |
 | **v1.4.0-beta.1** | DCF Valuation Beta, 5-year FCF projections, configurable assumptions, Bear/Base/Bull scenarios, DCF sensitivity analysis, intrinsic-value comparison, DCF Education Mode |
 | **v1.3.0**        | Price Alerts, Peer/Sector Comparison, News Sentiment Analysis, SMA-Crossover Backtesting, Dark/Light Theme, Dividend History, Multi-Currency Support                     |
 | **v1.2.0**        | Classroom Activities, Investing Vocabulary, Quick Quiz, expanded Teacher Notes                                                                                           |
@@ -503,6 +512,7 @@ Potential future features include:
 * Excel export with embedded charts
 * Additional valuation models
 * Expanded portfolio analytics
+* AI Tutor for follow-up questions about financial concepts
 
 ---
 
